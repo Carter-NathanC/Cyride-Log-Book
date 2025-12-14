@@ -1,0 +1,22 @@
+name: Manual Backlog Scan
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "Number of past days to scan"
+        required: true
+        default: "3"
+
+jobs:
+  backfill:
+    runs-on: self-hosted
+    steps:
+    - name: Run Backlog Scanner
+      run: |
+        # Runs the SAME script but with arguments, so it exits after scanning
+        SCRIPT_PATH=$(pwd)/scripts/queue_manager.py
+        export CYRIDE_BASE_DIR="/home/sdr/CYRIDE"
+        
+        echo "Scanning past ${{ github.event.inputs.days }} days..."
+        /usr/bin/python3 $SCRIPT_PATH --backlog ${{ github.event.inputs.days }}
