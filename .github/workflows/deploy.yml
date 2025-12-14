@@ -1,28 +1,36 @@
-name: Deploy to Production
+name: Deploy Location Logger
 
 on:
   push:
-    branches: [ "main" ]  # Trigger on push to main branch
+    branches: [ "main" ]
 
 jobs:
   deploy:
-    runs-on: self-hosted  # <--- This tells GitHub to use YOUR server, not theirs
-    
+    runs-on: self-hosted
+
     steps:
-    # Step 1: Pull the latest code
-    - name: Checkout code
-      uses: actions/checkout@v4
-      with:
-        clean: false  # Keeps untracked files (optional, good for .env files)
+    - name: Checkout Code
+      uses: actions/checkout@v3
 
-    # Step 2: Install Dependencies (Example for Node.js)
-    - name: Install Dependencies
+    - name: Update Logger Script
       run: |
-        npm install
-        npm run build
+        # Ensure the scripts directory exists
+        mkdir -p /home/sdr/scripts
+        
+        # Copy the logger script
+        # Assumes cymap_logger.py is in 'scripts/' folder in repo
+        cp scripts/cymap_logger.py /home/sdr/scripts/
+        
+        # Set permissions
+        chmod +x /home/sdr/scripts/cymap_logger.py
+        chown sdr:sdr /home/sdr/scripts/cymap_logger.py
 
-    # Step 3: Restart the Service
-    - name: Restart Application
+    - name: Restart Logger Service
       run: |
-        sudo systemctl restart your-web-service
-        # OR if using PM2: pm2 restart app-name
+        sudo systemctl daemon-reload
+        echo "Restarting CyMap Logger..."
+        sudo systemctl restart cymap-logger.service
+
+    - name: Verify Status
+      run: |
+        sudo systemctl status cymap-logger.service --no-pager
