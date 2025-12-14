@@ -72,10 +72,15 @@ def fetch_all_vehicle_data():
                 if res.ok:
                     for v in res.json():
                         if v['id'] in vehicles_by_id:
-                            vehicles_by_id[v['id']].update({'routeName': route['name'], 'routeColor': route['color']})
+                            # Update with route specific info, preserving base info
+                            vehicles_by_id[v['id']].update({
+                                'routeName': route['name'], 
+                                'routeColor': route['color'],
+                                # Ensure we capture route-specific heading if available, otherwise fallback
+                                'headingDegrees': v.get('headingDegrees', vehicles_by_id[v['id']].get('headingDegrees'))
+                            })
             except: pass
 
-        # Return ALL vehicles found (No time filtering)
         return list(vehicles_by_id.values())
         
     except Exception as e:
@@ -92,7 +97,6 @@ def save_periodic_data():
     }
 
     for v in vehicles:
-        # Check for valid lat/lon before saving, but ignore time
         if v.get('lat') is None or v.get('lon') is None:
             continue
 
@@ -102,12 +106,15 @@ def save_periodic_data():
             if not v.get('routeColor'):
                 v['routeColor'] = "#808080"
 
+        # Explicitly capture headingDegrees
+        h_deg = v.get('headingDegrees', 0)
+
         formatted_vehicle = {
             "name": v.get('name', 'Unknown'),
             "lat": v.get('lat'),
             "lon": v.get('lon'),
-            "heading": get_cardinal_direction(v.get('headingDegrees')),
-            "headingDegrees": v.get('headingDegrees', 0),
+            "heading": get_cardinal_direction(h_deg),
+            "headingDegrees": h_deg, # Save precise degrees
             "speed": v.get('speed', 0),
             "passengerPercent": v.get('passengerLoad', 0),
             "routeName": r_name,
