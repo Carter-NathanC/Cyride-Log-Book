@@ -14,7 +14,7 @@ jobs:
     steps:
     - name: Run Backlog Scanner
       run: |
-        # Runs the SAME script but with arguments, so it exits after scanning
+        # Runs the queue manager in backlog mode
         SCRIPT_PATH=$(pwd)/scripts/queue_manager.py
         export CYRIDE_BASE_DIR="/home/sdr/CYRIDE"
         
