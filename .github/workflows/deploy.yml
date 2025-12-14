@@ -1,0 +1,28 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches: [ "main" ]  # Trigger on push to main branch
+
+jobs:
+  deploy:
+    runs-on: self-hosted  # <--- This tells GitHub to use YOUR server, not theirs
+    
+    steps:
+    # Step 1: Pull the latest code
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        clean: false  # Keeps untracked files (optional, good for .env files)
+
+    # Step 2: Install Dependencies (Example for Node.js)
+    - name: Install Dependencies
+      run: |
+        npm install
+        npm run build
+
+    # Step 3: Restart the Service
+    - name: Restart Application
+      run: |
+        sudo systemctl restart your-web-service
+        # OR if using PM2: pm2 restart app-name
