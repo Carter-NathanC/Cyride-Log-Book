@@ -3,7 +3,7 @@ import json
 import time
 import requests
 import schedule
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
 # --- CONFIGURATION ---
 BASE_DIR = os.getenv("CYRIDE_BASE_DIR", os.path.abspath("CYRIDE_DATA"))
@@ -72,10 +72,11 @@ def fetch_all_vehicle_data():
                 if res.ok:
                     for v in res.json():
                         if v['id'] in vehicles_by_id:
-                            # Update with route info
+                            # Update with route specific info, preserving base info
                             vehicles_by_id[v['id']].update({
                                 'routeName': route['name'], 
                                 'routeColor': route['color'],
+                                # Ensure we capture route-specific heading if available, otherwise fallback
                                 'headingDegrees': v.get('headingDegrees', vehicles_by_id[v['id']].get('headingDegrees'))
                             })
             except: pass
@@ -95,28 +96,9 @@ def save_periodic_data():
         "Vehicles": []
     }
 
-    current_time_utc = datetime.now(timezone.utc)
-
     for v in vehicles:
         if v.get('lat') is None or v.get('lon') is None:
             continue
-
-        # FILTER: Only keep vehicles updated recently (Last 48 hours = Today + Yesterday)
-        last_updated_str = v.get('lastUpdated')
-        if last_updated_str:
-            try:
-                # Handle 'Z' manually if python version < 3.11 for fromisoformat
-                clean_ts = last_updated_str.replace('Z', '+00:00')
-                vehicle_time = datetime.fromisoformat(clean_ts)
-                
-                # Calculate age
-                age = current_time_utc - vehicle_time
-                
-                # If older than 48 hours (2 days), SKIP IT.
-                if age > timedelta(hours=48):
-                    continue
-            except ValueError:
-                continue # Skip if date parsing fails
 
         r_name = v.get('routeName')
         if not r_name:
@@ -124,6 +106,7 @@ def save_periodic_data():
             if not v.get('routeColor'):
                 v['routeColor'] = "#808080"
 
+        # Explicitly capture headingDegrees
         h_deg = v.get('headingDegrees', 0)
 
         formatted_vehicle = {
@@ -131,7 +114,7 @@ def save_periodic_data():
             "lat": v.get('lat'),
             "lon": v.get('lon'),
             "heading": get_cardinal_direction(h_deg),
-            "headingDegrees": h_deg,
+            "headingDegrees": h_deg, # Save precise degrees
             "speed": v.get('speed', 0),
             "passengerPercent": v.get('passengerLoad', 0),
             "routeName": r_name,
@@ -157,7 +140,7 @@ def save_periodic_data():
         with open(full_file_path, 'w') as f:
             json.dump(output_data, f, indent=4)
         
-        log(f"Saved {len(output_data['Vehicles'])} active vehicles to {now.strftime('%H:%M:%S')}")
+        log(f"Saved {len(output_data['Vehicles'])} vehicles to {now.strftime('%H:%M:%S')}")
     except Exception as e:
         log(f"Write Error: {e}")
 
