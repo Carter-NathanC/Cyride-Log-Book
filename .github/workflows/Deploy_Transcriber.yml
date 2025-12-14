@@ -1,14 +1,18 @@
 name: Deploy Audio Transcriber
 
 on:
+  # Allows you to click "Run workflow" in GitHub Actions tab
+  workflow_dispatch:
   push:
     paths:
       - 'scripts/transcription_worker.py'
       - 'requirements.txt'
+      - '.github/workflows/deploy_transcriber.yml'
 
 jobs:
   deploy:
     runs-on: self-hosted
+    timeout-minutes: 30
     steps:
     - name: Checkout
       uses: actions/checkout@v3
@@ -22,7 +26,7 @@ jobs:
     - name: Install Python Dependencies
       run: |
         /usr/bin/python3 -m pip install --upgrade pip
-        # Installing requirements.txt which now includes torch/whisper
+        # Installs torch, whisper, etc. This may take a few minutes.
         /usr/bin/python3 -m pip install -r requirements.txt
 
     - name: Deploy Transcriber Service
@@ -38,11 +42,12 @@ jobs:
         [Service]
         Type=simple
         User=$USER_NAME
+        # -u forces unbuffered output so you see logs immediately
         ExecStart=/usr/bin/python3 -u $SCRIPT_PATH
         Restart=always
         RestartSec=10
         Environment=CYRIDE_BASE_DIR=/home/sdr/CYRIDE
-        # Logs to journal
+        # Ensure logs go to system journal
         StandardOutput=journal
         StandardError=journal
 
