@@ -7,7 +7,6 @@ from datetime import datetime, timezone
 
 # --- CONFIGURATION ---
 # We use an environment variable for the base path if available, otherwise default.
-# This makes it portable.
 BASE_DIR = os.getenv("CYRIDE_BASE_DIR", "/home/sdr/CYRIDE")
 FILE_SAVE_DIRECTORY = os.path.join(BASE_DIR, "Location")
 
@@ -19,7 +18,7 @@ ALL_VEHICLES_URL = f"{BASE_URL}/vehicles?api-key={API_KEY}"
 DRIVERS_URL = f"{BASE_URL}/drivers?api-key={API_KEY}"
 ROUTES_BASE_URL = f"{BASE_URL}/routes/"
 
-# Route Definitions (Truncated for brevity, full list is in your original)
+# Route Definitions
 ROUTES = [
     {"color":"#DA1F3D","id":4528,"name":"1 Red West"},
     {"color":"#DA1F3D","id":4529,"name":"1 Red East"},
@@ -80,8 +79,6 @@ def fetch_all_vehicle_data():
         drivers_by_id = {d['id']: f"{d['firstName']} {d['lastName']}".strip() for d in drivers}
         vehicles_by_id = {v['id']: v for v in all_vehicles}
         
-        # We process manually to avoid complexity of concurrent.futures inside this simple script
-        # if performance is an issue, we can add it back, but simple loop is safer for "install anywhere"
         for route in ROUTES:
             r, v_list = fetch_route_vehicles(route)
             for vehicle in v_list:
@@ -145,6 +142,7 @@ def save_periodic_data():
 
     output_data = { "Vehicles": formatted_vehicles_list }
 
+    # Save to Location/YYYY/MM/DD/
     save_path = os.path.join(
         FILE_SAVE_DIRECTORY, 
         now.strftime('%Y'), 
@@ -159,7 +157,7 @@ def save_periodic_data():
         with open(full_file_path, 'w') as f:
             json.dump(output_data, f, indent=4)
         
-        print(f"[{now.strftime('%H:%M:%S')}] Success: Saved {len(formatted_vehicles_list)} vehicles.")
+        print(f"[{now.strftime('%H:%M:%S')}] Saved {len(formatted_vehicles_list)} vehicles.")
             
     except Exception as e:
         print(f"ERROR: Could not write file: {e}")
@@ -168,6 +166,7 @@ if __name__ == '__main__':
     print("\n" + "="*50 + "\n   Vehicle Location Logger\n" + "="*50)
     print(f"Target Directory: {FILE_SAVE_DIRECTORY}")
     
+    # Ensure Base directory exists
     if not os.path.exists(FILE_SAVE_DIRECTORY):
         try:
             os.makedirs(FILE_SAVE_DIRECTORY, exist_ok=True)
@@ -175,6 +174,7 @@ if __name__ == '__main__':
             print(f"FATAL: Cannot create directory {FILE_SAVE_DIRECTORY}: {e}")
             exit(1)
 
+    # Schedule run every 5 seconds
     schedule.every(5).seconds.do(save_periodic_data)
     
     print("LOG: Service started. Loop 5s.")
