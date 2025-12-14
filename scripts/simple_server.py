@@ -160,6 +160,7 @@ class CyRideHandler(BaseHTTPRequestHandler):
         if path == '/api/data':
             self.send_response(200)
             self.send_header('Content-type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*') # Allow all connections
             self.end_headers()
             is_mounted = os.path.exists(MOUNT_DIR)
             response_data = {"status": {"mounted": is_mounted, "path": MOUNT_DIR}, "entries": []}
@@ -211,18 +212,26 @@ class ThreadingHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
 def main():
     log("--- CyRide Simple Server Starting ---")
     log(f"Data Directory: {BASE_DIR}")
+    
+    # Try Port 80
     try:
         server_address = ('0.0.0.0', PREFERRED_PORT)
         httpd = ThreadingHTTPServer(server_address, CyRideHandler)
-        log(f"Serving on Port {PREFERRED_PORT}...")
-    except PermissionError:
-        log(f"WARNING: Permission denied for Port {PREFERRED_PORT}. Falling back to Port {FALLBACK_PORT}.")
-        server_address = ('0.0.0.0', FALLBACK_PORT)
-        httpd = ThreadingHTTPServer(server_address, CyRideHandler)
-        log(f"Serving on Port {FALLBACK_PORT}...")
-    try: httpd.serve_forever()
-    except KeyboardInterrupt: pass
-    httpd.server_close()
+        log(f"SUCCESS: Serving on Port {PREFERRED_PORT}")
+        httpd.serve_forever()
+    except Exception as e:
+        log(f"WARNING: Could not bind to Port {PREFERRED_PORT} ({e}).")
+        log(f"Attempting fallback to Port {FALLBACK_PORT}...")
+        
+        # Try Port 8000
+        try:
+            server_address = ('0.0.0.0', FALLBACK_PORT)
+            httpd = ThreadingHTTPServer(server_address, CyRideHandler)
+            log(f"SUCCESS: Serving on Port {FALLBACK_PORT}")
+            httpd.serve_forever()
+        except Exception as e2:
+            log(f"CRITICAL ERROR: Could not bind to Port {FALLBACK_PORT} either: {e2}")
+            sys.exit(1)
 
 if __name__ == '__main__':
     main()
