@@ -1,12 +1,12 @@
 import os
 import json
 import time
+import sys
 import requests
 import schedule
 from datetime import datetime, timezone
 
 # --- CONFIGURATION ---
-# We use an environment variable for the base path if available, otherwise default.
 BASE_DIR = os.getenv("CYRIDE_BASE_DIR", "/home/sdr/CYRIDE")
 FILE_SAVE_DIRECTORY = os.path.join(BASE_DIR, "Location")
 
@@ -43,10 +43,21 @@ ROUTES = [
     {"color":"#446688","id":4574,"name":"Moonlight Express B"}
 ]
 
+def log(msg):
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
+
+def wait_for_drive():
+    """Pauses execution until the Google Drive mount base directory is available."""
+    # We check BASE_DIR, and perhaps ensure 'SDR Recordings' (or just the Base) exists.
+    # If BASE_DIR is /home/sdr/CYRIDE, we expect it to exist when mounted.
+    while not os.path.exists(BASE_DIR):
+        log(f"Waiting for GDrive/Mount at: {BASE_DIR}...")
+        time.sleep(10)
+    log("Mount path detected.")
+
 # --- HELPER FUNCTIONS ---
 
 def get_cardinal_direction(heading_degrees):
-    """Converts degrees (0-360) to NSEW string."""
     if heading_degrees is None: return "N/A"
     directions = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
     try:
@@ -56,7 +67,6 @@ def get_cardinal_direction(heading_degrees):
         return "N/A"
 
 def fetch_route_vehicles(route):
-    """Fetches vehicles for a specific route ID."""
     url = f"{ROUTES_BASE_URL}{route['id']}/vehicles?api-key={API_KEY}"
     try:
         res = requests.get(url, timeout=5)
@@ -66,16 +76,13 @@ def fetch_route_vehicles(route):
     return route, []
 
 def fetch_all_vehicle_data():
-    """Fetches data from API and merges Route/Driver info."""
     try:
-        # Fetch basic lists
         drivers_res = requests.get(DRIVERS_URL, timeout=10)
         vehicles_res = requests.get(ALL_VEHICLES_URL, timeout=10)
         
         drivers = drivers_res.json() if drivers_res.ok else []
         all_vehicles = vehicles_res.json() if vehicles_res.ok else []
         
-        # Create lookup tables
         drivers_by_id = {d['id']: f"{d['firstName']} {d['lastName']}".strip() for d in drivers}
         vehicles_by_id = {v['id']: v for v in all_vehicles}
         
@@ -89,7 +96,6 @@ def fetch_all_vehicle_data():
                     })
 
         processed_vehicles = []
-        # Filter for active vehicles (updated in last 24 hours)
         one_day_ago = datetime.now(timezone.utc).timestamp() - (24 * 3600)
         
         for vehicle in vehicles_by_id.values():
@@ -106,11 +112,10 @@ def fetch_all_vehicle_data():
                     
         return processed_vehicles
     except Exception as e:
-        print(f"ERROR: API request failed: {e}")
+        log(f"ERROR: API request failed: {e}")
         return None
 
 def save_periodic_data():
-    """Fetches and saves data."""
     vehicles = fetch_all_vehicle_data()
     if vehicles is None: return
 
@@ -142,7 +147,6 @@ def save_periodic_data():
 
     output_data = { "Vehicles": formatted_vehicles_list }
 
-    # Save to Location/YYYY/MM/DD/
     save_path = os.path.join(
         FILE_SAVE_DIRECTORY, 
         now.strftime('%Y'), 
@@ -157,16 +161,19 @@ def save_periodic_data():
         with open(full_file_path, 'w') as f:
             json.dump(output_data, f, indent=4)
         
-        print(f"[{now.strftime('%H:%M:%S')}] Saved {len(formatted_vehicles_list)} vehicles.")
+        log(f"Saved {len(formatted_vehicles_list)} vehicles.")
             
     except Exception as e:
-        print(f"ERROR: Could not write file: {e}")
+        log(f"ERROR: Could not write file: {e}")
 
 if __name__ == '__main__':
     print("\n" + "="*50 + "\n   Vehicle Location Logger\n" + "="*50)
     print(f"Target Directory: {FILE_SAVE_DIRECTORY}")
     
-    # Ensure Base directory exists
+    # 1. Wait for Drive Mount
+    wait_for_drive()
+    
+    # 2. Ensure directory structure
     if not os.path.exists(FILE_SAVE_DIRECTORY):
         try:
             os.makedirs(FILE_SAVE_DIRECTORY, exist_ok=True)
@@ -174,10 +181,9 @@ if __name__ == '__main__':
             print(f"FATAL: Cannot create directory {FILE_SAVE_DIRECTORY}: {e}")
             exit(1)
 
-    # Schedule run every 5 seconds
     schedule.every(5).seconds.do(save_periodic_data)
     
-    print("LOG: Service started. Loop 5s.")
+    print("LOG: Service started. Loop 5s.", flush=True)
     
     while True:
         schedule.run_pending()
