@@ -1,24 +1,22 @@
 import os
 import sys
 import json
-import time
-import re
 import urllib.parse
 import shutil
+import socketserver
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime
-import threading
-import socketserver
 
 # --- CONFIGURATION ---
-BASE_DIR = os.getenv("CYRIDE_BASE_DIR", "/home/sdr/CYRIDE")
+BASE_DIR = os.getenv("CYRIDE_BASE_DIR", os.path.abspath("CYRIDE_DATA"))
 TRANSCRIPT_DIR = os.path.join(BASE_DIR, "Transcriptions")
 LOCATION_DIR = os.path.join(BASE_DIR, "Location")
 MOUNT_DIR = os.path.join(BASE_DIR, "SDR Recordings")
-PORT = 80
+
+PREFERRED_PORT = 80
+FALLBACK_PORT = 8000
 
 # --- HTML CONTENT ---
-# We write this to a file so the server can serve it natively
 HTML_CONTENT = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -28,7 +26,7 @@ HTML_CONTENT = """<!DOCTYPE html>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
     <style>
         :root { --bg-color: #f4f4f9; --paper-color: #ffffff; --text-primary: #1a1a1a; --text-secondary: #666; --border-color: #e0e0e0; }
-        body { font-family: 'Georgia', serif; background: var(--bg-color); color: var(--text-primary); margin: 0; padding: 20px; }
+        body { font-family: 'Segoe UI', Georgia, serif; background: var(--bg-color); color: var(--text-primary); margin: 0; padding: 20px; }
         .container { max-width: 900px; margin: 0 auto; background: var(--paper-color); padding: 40px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); min-height: 90vh; }
         header { border-bottom: 2px solid var(--text-primary); margin-bottom: 30px; display: flex; justify-content: space-between; align-items: center; }
         h1 { margin: 0; font-size: 2rem; color: #c8102e; }
@@ -51,16 +49,18 @@ HTML_CONTENT = """<!DOCTYPE html>
         .bus-marker-icon { background: transparent; border: none; }
         .loading { text-align: center; color: #999; padding: 20px; }
         .status-banner { background: #ffeeba; color: #856404; padding: 10px; text-align: center; margin-bottom: 20px; display: none; }
+        .audio-dock { position: fixed; bottom: 0; left: 0; right: 0; background: white; border-top: 1px solid #ccc; padding: 10px; display: flex; justify-content: center; box-shadow: 0 -2px 10px rgba(0,0,0,0.1); }
+        audio { width: 100%; max-width: 600px; }
     </style>
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 </head>
 <body>
 <div class="container">
     <header><h1>CyRide Dispatch Log</h1><div class="controls"><input type="date" id="date-picker"><button onclick="refreshLog()">Refresh</button></div></header>
-    <div id="drive-status" class="status-banner">Waiting for Recording Drive...</div>
+    <div id="drive-status" class="status-banner">Warning: Recording Drive Not Mounted</div>
     <div id="log-container">Loading...</div>
 </div>
-<audio id="audio-player" controls style="display:none"></audio>
+<div class="audio-dock"><audio id="audio-player" controls></audio></div>
 <script>
     const AMES_DEFAULT = { lat: 42.0282, lng: -93.6434 };
     const tzOffset = new Date().getTimezoneOffset() * 60000; 
@@ -101,12 +101,12 @@ HTML_CONTENT = """<!DOCTYPE html>
             const res = await fetch(`/api/data?date=${dateStr}`);
             const data = await res.json();
             
+            const driveStatus = document.getElementById('drive-status');
             if(data.status && data.status.mounted === false) {
-                document.getElementById('drive-status').style.display = 'block';
-                container.innerHTML = '<div class="loading">Drive Not Mounted</div>';
-                return;
+                driveStatus.style.display = 'block';
+                driveStatus.innerText = `Storage not found at: ${data.status.path}`;
             } else {
-                document.getElementById('drive-status').style.display = 'none';
+                driveStatus.style.display = 'none';
             }
 
             if (!data.entries || data.entries.length === 0) {
@@ -148,123 +148,60 @@ HTML_CONTENT = """<!DOCTYPE html>
 </html>
 """
 
-# --- HELPERS ---
-
 def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
 
-def parse_filename_metadata(path):
-    basename = os.path.basename(path)
-    match = re.search(r'(\d{2})[_-](\d{2})[_-](\d{2})-(\d+)\.mp3', basename)
-    if match:
-        h, m, s, bus_id = match.groups()
-        return {
-            "time_str": f"{h}:{m}:{s}",
-            "seconds_of_day": int(h)*3600 + int(m)*60 + int(s),
-            "bus_id": bus_id
-        }
-    return None
-
-def find_closest_location(date_obj, target_seconds, bus_id):
-    day_loc_dir = os.path.join(LOCATION_DIR, date_obj.strftime('%Y'), date_obj.strftime('%m'), date_obj.strftime('%d'))
-    if not os.path.exists(day_loc_dir): return None
-    
-    # Search ±10 seconds
-    for offset in [0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6, 7, -7, 8, -8, 9, -9, 10, -10]:
-        check_sec = target_seconds + offset
-        if check_sec < 0 or check_sec >= 86400: continue
-        filename = f"{check_sec//3600:02d}-{(check_sec%3600)//60:02d}-{check_sec%60:02d}.json"
-        filepath = os.path.join(day_loc_dir, filename)
-        if os.path.exists(filepath):
-            try:
-                with open(filepath, 'r') as f:
-                    data = json.load(f)
-                    for v in data.get("Vehicles", []):
-                        if v.get("name") == bus_id: return v
-            except: continue
-    return None
-
-# --- REQUEST HANDLER ---
-
 class CyRideHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        # Parse URL
         parsed_path = urllib.parse.urlparse(self.path)
         path = parsed_path.path
         query = urllib.parse.parse_qs(parsed_path.query)
 
-        # 1. SERVE API DATA
         if path == '/api/data':
             self.send_response(200)
             self.send_header('Content-type', 'application/json')
             self.end_headers()
-            
-            response_data = {"status": {"mounted": os.path.exists(MOUNT_DIR)}, "entries": []}
-            
-            if response_data["status"]["mounted"] and 'date' in query:
+            is_mounted = os.path.exists(MOUNT_DIR)
+            response_data = {"status": {"mounted": is_mounted, "path": MOUNT_DIR}, "entries": []}
+            if 'date' in query:
                 date_str = query['date'][0]
                 try:
                     dt = datetime.strptime(date_str, '%Y-%m-%d')
                     transcript_path = os.path.join(TRANSCRIPT_DIR, dt.strftime('%Y'), dt.strftime('%m'), dt.strftime('%d') + ".json")
-                    
                     if os.path.exists(transcript_path):
                         with open(transcript_path, 'r') as f:
                             transcripts = json.load(f)
-                        
                         for t in transcripts:
-                            meta = parse_filename_metadata(t.get("Path", ""))
                             item = {
                                 "Time": t.get("Time"),
                                 "Text": t.get("Text"),
                                 "AudioPath": f"/audio?path={urllib.parse.quote(t.get('Path', ''))}",
                                 "BusID": "Unknown", "Route": "Unknown", "Color": "#333", "Location": None
                             }
-                            if meta:
-                                item["BusID"] = meta["bus_id"]
-                                item["Time"] = meta["time_str"]
-                                loc = find_closest_location(dt, meta["seconds_of_day"], meta["bus_id"])
-                                if loc:
-                                    item["Route"] = loc.get("routeName", "Unknown")
-                                    item["Color"] = loc.get("routeColor", "#333")
-                                    item["Location"] = {"Lat": loc.get("lat"), "Long": loc.get("lon"), "Heading": loc.get("headingDegrees"), "Speed": loc.get("speed")}
                             response_data["entries"].append(item)
-                except Exception as e:
-                    log(f"API Error: {e}")
-
+                except Exception as e: log(f"API Error: {e}")
             self.wfile.write(json.dumps(response_data).encode('utf-8'))
             return
-
-        # 2. SERVE AUDIO FILES
         elif path == '/audio':
             if 'path' in query:
                 file_path = query['path'][0]
-                # Security Check: Must allow Base Directory
-                safe_base = os.path.abspath(BASE_DIR)
-                clean_path = os.path.abspath(file_path)
-                
-                if clean_path.startswith(safe_base) and os.path.exists(clean_path):
+                if os.path.exists(file_path):
                     try:
-                        file_size = os.path.getsize(clean_path)
+                        file_size = os.path.getsize(file_path)
                         self.send_response(200)
                         self.send_header('Content-Type', 'audio/mpeg')
                         self.send_header('Content-Length', str(file_size))
                         self.end_headers()
-                        with open(clean_path, 'rb') as f:
-                            shutil.copyfileobj(f, self.wfile)
+                        with open(file_path, 'rb') as f: shutil.copyfileobj(f, self.wfile)
                         return
-                    except Exception as e:
-                        log(f"Audio Error: {e}")
-            
+                    except Exception as e: log(f"Audio Serve Error: {e}")
             self.send_response(404)
             self.end_headers()
             return
-
-        # 3. SERVE INDEX.HTML (For root or anything else)
         else:
             self.send_response(200)
             self.send_header('Content-type', 'text/html')
             self.end_headers()
-            # Serve from the embedded string directly
             self.wfile.write(HTML_CONTENT.encode('utf-8'))
             return
 
@@ -273,19 +210,18 @@ class ThreadingHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
 
 def main():
     log("--- CyRide Simple Server Starting ---")
-    log(f"Serving on Port {PORT}...")
-    
-    server_address = ('0.0.0.0', PORT)
-    httpd = ThreadingHTTPServer(server_address, CyRideHandler)
-    
+    log(f"Data Directory: {BASE_DIR}")
     try:
-        httpd.serve_forever()
-    except KeyboardInterrupt:
-        pass
+        server_address = ('0.0.0.0', PREFERRED_PORT)
+        httpd = ThreadingHTTPServer(server_address, CyRideHandler)
+        log(f"Serving on Port {PREFERRED_PORT}...")
     except PermissionError:
-        log(f"CRITICAL: Permission denied binding to port {PORT}. Needs CAP_NET_BIND_SERVICE.")
-        sys.exit(1)
-    
+        log(f"WARNING: Permission denied for Port {PREFERRED_PORT}. Falling back to Port {FALLBACK_PORT}.")
+        server_address = ('0.0.0.0', FALLBACK_PORT)
+        httpd = ThreadingHTTPServer(server_address, CyRideHandler)
+        log(f"Serving on Port {FALLBACK_PORT}...")
+    try: httpd.serve_forever()
+    except KeyboardInterrupt: pass
     httpd.server_close()
 
 if __name__ == '__main__':
