@@ -41,6 +41,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         .controls { display: flex; gap: 10px; }
         input[type="date"] { padding: 8px; font-size: 1rem; }
         button { padding: 8px 12px; cursor: pointer; }
+        #sort-btn { min-width: 120px; }
 
         .script-line { margin-bottom: 24px; display: flex; align-items: baseline; position: relative; animation: fadeIn 0.3s ease-in; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
@@ -99,6 +100,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         <h1>CyRide Dispatch Log</h1>
         <div class="controls">
             <input type="date" id="date-picker">
+            <button id="sort-btn" onclick="toggleSort()">Sort: ⬆ Time</button>
             <button onclick="refreshLog()">Refresh</button>
         </div>
     </header>
@@ -118,12 +120,22 @@ HTML_CONTENT = """<!DOCTYPE html>
     
     document.getElementById('date-picker').addEventListener('change', (e) => loadTranscript(e.target.value));
     
-    // Globals for pagination
+    // Globals for pagination & sorting
     let currentOffset = 0;
     let activeDateStr = localISOTime;
     let stopLoading = false;
+    let sortOrder = 'asc'; // 'asc' = Oldest First (Default), 'desc' = Newest First
 
     function refreshLog() { loadTranscript(document.getElementById('date-picker').value); }
+    
+    function toggleSort() {
+        // Toggle sort order
+        sortOrder = (sortOrder === 'asc') ? 'desc' : 'asc';
+        // Update button text
+        document.getElementById('sort-btn').innerText = (sortOrder === 'asc') ? "Sort: ⬆ Time" : "Sort: ⬇ Time";
+        // Reload data
+        loadTranscript(document.getElementById('date-picker').value);
+    }
 
     function getArrowIcon(color, headingDegrees, isOOS) {
         let useDot = false;
@@ -187,8 +199,8 @@ HTML_CONTENT = """<!DOCTYPE html>
         
         const indicator = document.getElementById('loading-indicator');
         try {
-            // Fetch 10 items starting at currentOffset
-            const res = await fetch(`/api/data?date=${activeDateStr}&offset=${currentOffset}&limit=10`);
+            // Fetch 10 items starting at currentOffset, passing sort param
+            const res = await fetch(`/api/data?date=${activeDateStr}&offset=${currentOffset}&limit=10&sort=${sortOrder}`);
             if(!res.ok) throw new Error("API Error");
             const data = await res.json();
             
@@ -381,6 +393,11 @@ class CyRideHandler(BaseHTTPRequestHandler):
                     limit = int(query.get('limit', [10])[0])
                 except: limit = 10
                 
+                # Get Sort Order ('asc' or 'desc')
+                try:
+                    sort_order = query.get('sort', ['asc'])[0]
+                except: sort_order = 'asc'
+                
                 try:
                     dt = datetime.strptime(date_str, '%Y-%m-%d')
                     transcript_path = os.path.join(
@@ -394,8 +411,10 @@ class CyRideHandler(BaseHTTPRequestHandler):
                         with open(transcript_path, 'r') as f:
                             transcripts = json.load(f)
                         
-                        # 1. Reverse Order (Newest First)
-                        transcripts.reverse()
+                        # 1. Sort Order
+                        if sort_order == 'desc':
+                            transcripts.reverse()
+                        # else: 'asc' is default file order (oldest first)
                         
                         # 2. Slice for Pagination
                         total_items = len(transcripts)
