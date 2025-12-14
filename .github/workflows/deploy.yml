@@ -12,25 +12,45 @@ jobs:
     - name: Checkout Code
       uses: actions/checkout@v3
 
-    - name: Update Logger Script
+    - name: Install Python Dependencies
       run: |
-        # Ensure the scripts directory exists
-        mkdir -p /home/sdr/scripts
-        
-        # Copy the logger script
-        # Assumes cymap_logger.py is in 'scripts/' folder in repo
-        cp scripts/cymap_logger.py /home/sdr/scripts/
-        
-        # Set permissions
-        chmod +x /home/sdr/scripts/cymap_logger.py
-        chown sdr:sdr /home/sdr/scripts/cymap_logger.py
+        # Upgrade pip and install requirements
+        python3 -m pip install --upgrade pip
+        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-    - name: Restart Logger Service
+    - name: Setup Systemd Service
       run: |
+        # Get the absolute path to the script in the runner's workspace
+        SCRIPT_PATH=$(pwd)/cymap_logger.py
+        USER_NAME=$(whoami)
+        
+        # Create a service file dynamically
+        echo "[Unit]
+        Description=CyMap Location Logger (Git Runner Managed)
+        After=network.target
+
+        [Service]
+        Type=simple
+        User=$USER_NAME
+        # Use the runner's python executable or system python
+        ExecStart=/usr/bin/python3 -u $SCRIPT_PATH
+        Restart=always
+        RestartSec=5
+        
+        # Set Environment Variable for Base Directory if needed
+        Environment=CYRIDE_BASE_DIR=/home/sdr/CYRIDE
+
+        [Install]
+        WantedBy=multi-user.target" > cymap-logger.service
+
+        # Move service file to systemd directory (Requires sudo NOPASSWD for mv/systemctl)
+        sudo mv cymap-logger.service /etc/systemd/system/cymap-logger.service
+        
+        # Reload and Restart
         sudo systemctl daemon-reload
-        echo "Restarting CyMap Logger..."
+        sudo systemctl enable cymap-logger.service
         sudo systemctl restart cymap-logger.service
 
-    - name: Verify Status
+    - name: Verify Service Status
       run: |
         sudo systemctl status cymap-logger.service --no-pager
