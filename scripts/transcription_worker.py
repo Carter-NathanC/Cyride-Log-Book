@@ -15,14 +15,11 @@ STATE_DIR = os.path.join(BASE_DIR, "states")
 TRANSCRIPT_DIR = os.path.join(BASE_DIR, "Transcriptions")
 
 # Audio Config
-SAMPLE_RATE = 16000 # Whisper expects 16k
-# Model options: tiny, base, small, medium, large
-# 'medium.en' is a great balance for English radio accuracy
+SAMPLE_RATE = 16000 
 WHISPER_MODEL_SIZE = "medium.en" 
 
 def log(msg):
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
-    sys.stdout.flush()
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
 
 class AudioCleaner:
     @staticmethod
@@ -30,24 +27,16 @@ class AudioCleaner:
         """
         Cleans radio audio:
         1. Loads MP3
-        2. Bandpass filter (300Hz - 3400Hz) for voice clarity
+        2. Bandpass filter (300Hz - 3400Hz)
         3. Normalization
         Returns: Path to temporary cleaned WAV file
         """
         try:
             audio = AudioSegment.from_file(input_path)
-            
-            # 1. Resample to 16k for Whisper/Processing
             audio = audio.set_frame_rate(SAMPLE_RATE).set_channels(1)
-            
-            # 2. Bandpass Filter (300Hz - 3.4kHz) - Standard Voice Band
-            # Simple implementation using pydub's high/low pass
             audio = audio.high_pass_filter(300).low_pass_filter(3400)
-            
-            # 3. Normalize
             audio = audio.normalize()
 
-            # Export temp file
             temp_path = input_path + ".temp.wav"
             audio.export(temp_path, format="wav")
             return temp_path, audio.duration_seconds
@@ -66,13 +55,10 @@ def load_json(filepath):
 
 def save_json(filepath, data):
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
-    # atomic write approach not strictly used here, but we re-read before write in main logic
     with open(filepath, 'w') as f:
         json.dump(data, f, indent=4)
 
 def append_transcription(date_obj, entry):
-    """Appends the transcription entry to the daily transcript list."""
-    # Path: Transcriptions/YYYY/MM/DD.json
     path = os.path.join(
         TRANSCRIPT_DIR,
         date_obj.strftime('%Y'),
@@ -87,22 +73,14 @@ def append_transcription(date_obj, entry):
                 content = json.load(f)
                 if isinstance(content, list):
                     current_data = content
-                else:
-                    # If it was initialized differently, wrap it or start new
-                    current_data = [] 
         except:
             pass
             
     current_data.append(entry)
-    
     save_json(path, current_data)
     log(f"Saved transcription to {path}")
 
 def update_status(state_file_path, file_key, new_status):
-    """
-    Updates the status of a file in the state JSON.
-    Re-reads the file immediately before writing to minimize race conditions.
-    """
     try:
         data = load_json(state_file_path)
         if file_key in data:
@@ -116,23 +94,18 @@ def update_status(state_file_path, file_key, new_status):
 
 def process_file(model, file_path, file_data, state_file_path, date_obj):
     log(f"Processing: {file_path}")
-    
-    # Update state to Processing
     update_status(state_file_path, file_path, "processing")
     
-    # 1. Clean Audio
     clean_path, duration = AudioCleaner.clean_audio(file_path)
     if not clean_path:
         update_status(state_file_path, file_path, "error")
         return
 
     try:
-        # 2. Transcribe
-        # fp16=False allows running on CPU if GPU not available
+        # fp16=False allows CPU usage if GPU is missing
         result = model.transcribe(clean_path, fp16=torch.cuda.is_available())
         text = result["text"].strip()
         
-        # 3. Create Record
         transcription_entry = {
             "Path": file_path,
             "Time": file_data.get("TimeAdded", datetime.now().isoformat()),
@@ -141,10 +114,7 @@ def process_file(model, file_path, file_data, state_file_path, date_obj):
             "Hash": file_data.get("Hash", "")
         }
         
-        # 4. Save Transcription
         append_transcription(date_obj, transcription_entry)
-        
-        # 5. Update State
         update_status(state_file_path, file_path, "processed")
         log(f"Completed: '{text[:30]}...'")
 
@@ -152,16 +122,13 @@ def process_file(model, file_path, file_data, state_file_path, date_obj):
         log(f"Transcription Error: {e}")
         update_status(state_file_path, file_path, "error")
     finally:
-        # Cleanup temp file
         if os.path.exists(clean_path):
             os.remove(clean_path)
 
 def scan_and_process(model):
-    # Scan today, then look back a few days if today is empty
-    # to catch up on any backlog
+    # Scan today + past 7 days
     found_any = False
-    
-    for i in range(8): # Today + past 7 days
+    for i in range(8): 
         scan_date = datetime.now() - timedelta(days=i)
         
         state_file_path = os.path.join(
@@ -174,24 +141,23 @@ def scan_and_process(model):
         if not os.path.exists(state_file_path):
             continue
             
-        # Load state
         state_data = load_json(state_file_path)
         
-        # Find FIRST 'queue' item
-        # We process one at a time to keep loop responsive
+        # Find first item with status 'queue'
         for path, info in state_data.items():
             if info.get("status") == "queue":
                 found_any = True
                 process_file(model, path, info, state_file_path, scan_date)
-                # Break after one file to allow state reloading/checks
-                return True 
+                return True # Return to refresh loop/state
                 
     return found_any
 
 def main():
     log("--- CyRide Transcriber Starting ---")
     
-    # Check for GPU
+    # Ensure directories exist
+    os.makedirs(TRANSCRIPT_DIR, exist_ok=True)
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
     log(f"Loading Whisper Model ({WHISPER_MODEL_SIZE}) on {device}...")
     
@@ -206,13 +172,9 @@ def main():
     
     while True:
         try:
-            # If we processed something, don't sleep (go immediately to next)
-            # If we found nothing, sleep 5 seconds
             did_work = scan_and_process(model)
-            
             if not did_work:
                 time.sleep(5)
-                
         except KeyboardInterrupt:
             break
         except Exception as e:
