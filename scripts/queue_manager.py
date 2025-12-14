@@ -23,6 +23,15 @@ def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
     sys.stdout.flush()
 
+def wait_for_drive():
+    """Pauses execution until the Google Drive mount (or specific folder) is detected."""
+    # We check for MOUNT_DIR because it's the specific target for scanning.
+    # If the drive isn't mounted, this folder likely won't exist or will be empty/different.
+    while not os.path.exists(MOUNT_DIR):
+        log(f"Waiting for GDrive mount at: {MOUNT_DIR}...")
+        time.sleep(10)
+    log("GDrive mount detected. Resuming startup.")
+
 def check_permissions():
     """Checks if we can write to the necessary directories."""
     log(f"Checking permissions for {STATE_DIR}...")
@@ -75,7 +84,6 @@ def save_state(date_obj, state_data):
     try:
         with open(filepath, 'w') as f:
             json.dump(state_data, f, indent=4)
-        # log(f"Saved state file: {filepath}")
     except Exception as e:
         log(f"Error saving state {filepath}: {e}")
 
@@ -117,29 +125,22 @@ def scan_date(date_obj):
     
     current_time_str = datetime.now().isoformat()
     
-    # Try both Zero-padded (05) and Single-digit (5) formats
-    # Some SDR software uses 2023/5/1, others 2023/05/01
     year_str = date_obj.strftime('%Y')
     month_strs = [date_obj.strftime('%m'), str(date_obj.month)]
     day_strs = [date_obj.strftime('%d'), str(date_obj.day)]
     
-    # Unique combinations to check (preserve order, padded first)
     path_suffixes = []
-    for m in dict.fromkeys(month_strs): # dict.fromkeys preserves order, removes dups
+    for m in dict.fromkeys(month_strs): 
         for d in dict.fromkeys(day_strs):
             path_suffixes.append(os.path.join(year_str, m, d))
 
-    found_any_dir = False
-
     for group in GROUPS:
-        # Check all possible path variations
         for suffix in path_suffixes:
             day_path = os.path.join(MOUNT_DIR, group, suffix)
             
             if not os.path.exists(day_path):
                 continue
                 
-            found_any_dir = True
             try:
                 files = sorted([f for f in os.listdir(day_path) if f.endswith(".mp3")])
                 
@@ -164,8 +165,6 @@ def scan_date(date_obj):
             except OSError as e:
                 log(f"Error accessing {day_path}: {e}")
 
-    # If running live and we found nothing, we don't spam logs. 
-    # But if doing backlog, user might want to know.
     if state_changed:
         save_state(date_obj, state_data)
         if new_queue_items:
@@ -179,13 +178,16 @@ def main():
     log(f"--- Queue Manager Starting ---")
     log(f"Base Directory: {BASE_DIR}")
     
+    # Check for drive mount BEFORE doing anything else
+    wait_for_drive()
+    
+    # Now safe to check write permissions
     check_permissions()
 
     if args.backlog:
         log(f"Mode: BACKLOG SCAN ({args.backlog} days)")
         for i in range(args.backlog + 1):
             scan_d = datetime.now() - timedelta(days=i)
-            # log(f"Scanning date: {scan_d.strftime('%Y-%m-%d')}")
             scan_date(scan_d)
         log("--- Backlog Scan Complete ---")
     else:
