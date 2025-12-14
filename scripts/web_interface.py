@@ -3,7 +3,6 @@ import sys
 import json
 import time
 import re
-import threading
 from datetime import datetime
 from flask import Flask, render_template_string, request, send_file, jsonify, abort
 
@@ -79,16 +78,19 @@ def find_closest_location(date_obj, target_seconds, bus_id):
 
 @app.route('/')
 def index():
-    return render_template_string(HTML_TEMPLATE, drive_ready=is_drive_mounted())
-
-@app.route('/api/status')
-def status():
-    return jsonify({"drive_mounted": is_drive_mounted()})
+    # If drive isn't mounted, show the status page but don't crash
+    if not is_drive_mounted():
+        return render_template_string(STATUS_TEMPLATE, 
+                                    mounted=False, 
+                                    base_dir=BASE_DIR, 
+                                    mount_dir=MOUNT_DIR)
+    
+    return render_template_string(HTML_TEMPLATE)
 
 @app.route('/api/data')
 def get_data():
     if not is_drive_mounted():
-        return jsonify({"error": "Drive not mounted"}), 503
+        return jsonify([])
 
     date_str = request.args.get('date')
     if not date_str:
@@ -114,9 +116,6 @@ def get_data():
         with open(transcript_path, 'r') as f:
             transcripts = json.load(f)
             
-        # Process most recent first if desired, or keep chronological
-        # transcripts.sort(key=lambda x: x.get("Time")) 
-            
         for t in transcripts:
             path = t.get("Path", "")
             meta = parse_filename_metadata(path)
@@ -134,7 +133,6 @@ def get_data():
 
             if meta:
                 item["BusID"] = meta["bus_id"]
-                # Use strict time from filename if available
                 item["Time"] = meta["time_str"] 
                 
                 loc = find_closest_location(dt, meta["seconds_of_day"], meta["bus_id"])
@@ -162,7 +160,6 @@ def stream_audio():
     if not path: abort(404)
     
     clean_path = os.path.abspath(path)
-    # Security check to ensure we only serve files from our base dir
     if not clean_path.startswith(os.path.abspath(BASE_DIR)):
         abort(403)
         
@@ -171,7 +168,33 @@ def stream_audio():
         
     return send_file(clean_path)
 
-# --- TEMPLATE (Based on your Reference) ---
+# --- TEMPLATES ---
+
+STATUS_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>System Status</title>
+    <style>
+        body { font-family: sans-serif; padding: 50px; text-align: center; background: #f8f9fa; }
+        .box { background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); display: inline-block; }
+        h1 { color: #dc3545; }
+        code { background: #eee; padding: 2px 5px; border-radius: 3px; }
+    </style>
+    <meta http-equiv="refresh" content="5">
+</head>
+<body>
+    <div class="box">
+        <h1>Drive Not Mounted</h1>
+        <p>The server is running, but the recording drive is not detected.</p>
+        <p>Looking for: <code>{{ mount_dir }}</code></p>
+        <p>Base Directory: <code>{{ base_dir }}</code></p>
+        <p><em>This page will refresh automatically every 5 seconds...</em></p>
+    </div>
+</body>
+</html>
+"""
+
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -179,11 +202,7 @@ HTML_TEMPLATE = """
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>CyRide Dispatch Log</title>
-    <!-- Leaflet CSS -->
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
-      crossorigin=""/>
-      
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
     <style>
         :root {
             --bg-color: #f4f4f9; --paper-color: #ffffff;
@@ -200,8 +219,6 @@ HTML_TEMPLATE = """
         input[type="date"] { padding: 8px; font-size: 1rem; }
         button { padding: 8px 12px; cursor: pointer; }
 
-        .status-bar { background: #ffeeba; color: #856404; padding: 10px; margin-bottom: 20px; border-radius: 4px; text-align: center; display: none; }
-
         .script-line { margin-bottom: 24px; display: flex; align-items: baseline; position: relative; }
         .meta-col { width: 140px; flex-shrink: 0; font-family: monospace; font-size: 0.8rem; color: var(--text-secondary); text-align: right; padding-right: 20px; border-right: 1px solid var(--border-color); margin-right: 20px; }
         .time { display: block; font-weight: bold; }
@@ -213,7 +230,6 @@ HTML_TEMPLATE = """
         .speech:hover { background: rgba(0,0,0,0.05); }
         .speech.playing { background: #e6ffe6; border-left: 3px solid #00cc00; }
         
-        /* Map Tooltip */
         .tooltip { 
             visibility: hidden; 
             width: 300px; 
@@ -230,7 +246,7 @@ HTML_TEMPLATE = """
             font-family: sans-serif; 
             box-shadow: 0 4px 20px rgba(0,0,0,0.4); 
             border: 1px solid #ccc; 
-            pointer-events: none; /* Important for hover stability */
+            pointer-events: none;
             display: block;
         }
         
@@ -258,12 +274,6 @@ HTML_TEMPLATE = """
         </div>
     </header>
 
-    {% if not drive_ready %}
-    <div class="status-bar" style="display:block">
-        <strong>Warning:</strong> Drive not mounted yet. Data may be unavailable.
-    </div>
-    {% endif %}
-
     <div id="log-container">Loading...</div>
 </div>
 
@@ -271,8 +281,6 @@ HTML_TEMPLATE = """
 
 <script>
     const AMES_DEFAULT = { lat: 42.0282, lng: -93.6434 };
-
-    // -- Date Setup --
     const tzOffset = new Date().getTimezoneOffset() * 60000; 
     const localISOTime = (new Date(Date.now() - tzOffset)).toISOString().slice(0, -1).split('T')[0];
     document.getElementById('date-picker').value = localISOTime;
@@ -293,7 +301,6 @@ HTML_TEMPLATE = """
         return L.divIcon({html: svg, className: 'bus-marker-icon', iconSize: [24,24], iconAnchor:[12,12]});
     }
 
-    // Map Initialization
     window.initMap = function(element, lat, lng, heading, color) {
         if (!element || !lat || !lng) return;
         
@@ -314,7 +321,6 @@ HTML_TEMPLATE = """
         }).addTo(map);
 
         L.marker([lat, lng], {icon: getArrowIcon(color, heading)}).addTo(map);
-        
         element._leaflet_map = map;
         setTimeout(() => map.invalidateSize(), 200);
     }
@@ -324,15 +330,10 @@ HTML_TEMPLATE = """
         container.innerHTML = '<div class="loading">Loading...</div>';
 
         try {
-            // Using Python API instead of direct file fetch
             const res = await fetch(`/api/data?date=${dateStr}`);
-            if(!res.ok) throw new Error("No log found or Drive unavailable");
+            if(!res.ok) throw new Error("Server communication error");
             const data = await res.json();
             
-            if (data.error) {
-                container.innerHTML = `<div class="loading">${data.error}</div>`;
-                return;
-            }
             if (data.length === 0) {
                 container.innerHTML = `<div class="loading">No transcripts found for ${dateStr}</div>`;
                 return;
@@ -346,8 +347,6 @@ HTML_TEMPLATE = """
                 
                 const hasLoc = entry.Location != null;
                 const loc = entry.Location || {};
-                
-                const uniqueMapId = `map-${index}`;
                 const color = entry.Color || "#333";
                 
                 const headingVal = hasLoc ? (loc.Heading !== undefined ? loc.Heading : null) : null;
@@ -403,7 +402,5 @@ HTML_TEMPLATE = """
 
 if __name__ == '__main__':
     log("--- CyRide Web Interface Starting ---")
-    log("Note: Running on Port 80 (Requires CAP_NET_BIND_SERVICE)")
-    # We DO NOT wait for drive here anymore to ensure port opens immediately
-    # Drive status is checked in API endpoints
-    app.run(host='0.0.0.0', port=80)
+    log("Running on Port 5000. Access via http://<server-ip>:5000")
+    app.run(host='0.0.0.0', port=5000)
