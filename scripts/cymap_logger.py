@@ -3,7 +3,7 @@ import json
 import time
 import requests
 import schedule
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 # --- CONFIGURATION ---
 BASE_DIR = os.getenv("CYRIDE_BASE_DIR", os.path.abspath("CYRIDE_DATA"))
@@ -72,11 +72,10 @@ def fetch_all_vehicle_data():
                 if res.ok:
                     for v in res.json():
                         if v['id'] in vehicles_by_id:
-                            # Update with route specific info, preserving base info
                             vehicles_by_id[v['id']].update({
                                 'routeName': route['name'], 
                                 'routeColor': route['color'],
-                                # Ensure we capture route-specific heading if available, otherwise fallback
+                                # Ensure we preserve headingDegrees if route endpoint provides it
                                 'headingDegrees': v.get('headingDegrees', vehicles_by_id[v['id']].get('headingDegrees'))
                             })
             except: pass
@@ -96,9 +95,43 @@ def save_periodic_data():
         "Vehicles": []
     }
 
+    # Reference time: UTC now
+    current_time_utc = datetime.now(timezone.utc)
+    
+    kept_count = 0
+    skipped_count = 0
+
     for v in vehicles:
         if v.get('lat') is None or v.get('lon') is None:
             continue
+
+        # --- 48 HOUR FILTER ---
+        last_updated_str = v.get('lastUpdated') # e.g. "2025-12-13T17:34:13" or "2025-12-13T17:34:13Z"
+        if last_updated_str:
+            try:
+                # 1. Normalize string (Add Z if missing to assume UTC, or strip it to be safe)
+                # Python's fromisoformat handles 'Z' in 3.11+, but let's be robust for older versions
+                if last_updated_str.endswith('Z'):
+                    clean_ts = last_updated_str.replace('Z', '+00:00')
+                else:
+                    # If missing timezone, assume UTC
+                    clean_ts = last_updated_str + '+00:00'
+                
+                vehicle_time = datetime.fromisoformat(clean_ts)
+                
+                # 2. Calculate Age
+                age = current_time_utc - vehicle_time
+                
+                # 3. Filter: Keep only if updated in last 48 hours
+                if age > timedelta(hours=48):
+                    skipped_count += 1
+                    continue
+            except ValueError:
+                # If date parse fails, we skip filter and keep vehicle (safer) or drop it?
+                # Let's keep it to ensure we don't lose data on format changes
+                pass 
+
+        kept_count += 1
 
         r_name = v.get('routeName')
         if not r_name:
@@ -106,7 +139,6 @@ def save_periodic_data():
             if not v.get('routeColor'):
                 v['routeColor'] = "#808080"
 
-        # Explicitly capture headingDegrees
         h_deg = v.get('headingDegrees', 0)
 
         formatted_vehicle = {
@@ -114,7 +146,7 @@ def save_periodic_data():
             "lat": v.get('lat'),
             "lon": v.get('lon'),
             "heading": get_cardinal_direction(h_deg),
-            "headingDegrees": h_deg, # Save precise degrees
+            "headingDegrees": h_deg,
             "speed": v.get('speed', 0),
             "passengerPercent": v.get('passengerLoad', 0),
             "routeName": r_name,
@@ -122,6 +154,10 @@ def save_periodic_data():
             "lastUpdated": v.get('lastUpdated')
         }
         output_data["Vehicles"].append(formatted_vehicle)
+
+    # Log stats if 0 vehicles kept (to help debug)
+    if kept_count == 0 and skipped_count > 0:
+        log(f"WARNING: All {skipped_count} vehicles were filtered out (older than 48h). API data might be stale.")
 
     # NEW STRUCTURE: YYYY/MM/DD/HH/MM/SS.json
     save_path = os.path.join(
