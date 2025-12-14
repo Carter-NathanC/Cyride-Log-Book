@@ -1,0 +1,27 @@
+name: Manual Backfill
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "Number of past days to scan"
+        default: "3"
+      date:
+        description: "Specific date (YYYY-MM-DD)"
+        required: false
+
+jobs:
+  backfill:
+    runs-on: self-hosted
+    steps:
+    - name: Run Scanner
+      run: |
+        ARGS=""
+        if [ "${{ github.event.inputs.date }}" != "" ]; then
+           ARGS="--date ${{ github.event.inputs.date }}"
+        else
+           ARGS="--days ${{ github.event.inputs.days }}"
+        fi
+        
+        echo "Running backfill with args: $ARGS"
+        /usr/bin/python3 /home/sdr/scripts/state_scanner.py $ARGS
