@@ -17,7 +17,6 @@ STATE_DIR = os.path.join(BASE_DIR, "states")
 PORT = 8000
 
 # --- CACHE ---
-# Key: "YYYY/MM/DD/HH/MM/SS.json" -> Content
 FILE_CACHE = {}
 
 # --- HTML CONTENT ---
