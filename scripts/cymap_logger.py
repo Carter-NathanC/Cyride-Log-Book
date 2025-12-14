@@ -75,41 +75,27 @@ def fetch_all_vehicle_data():
                             vehicles_by_id[v['id']].update({'routeName': route['name'], 'routeColor': route['color']})
             except: pass
 
-        processed_vehicles = []
-        # Filter Logic: Only keep vehicles updated within the last hour (3600 seconds)
-        one_hour_ago = datetime.now(timezone.utc).timestamp() - 3600
+        # Return ALL vehicles found (No time filtering)
+        return list(vehicles_by_id.values())
         
-        for vehicle in vehicles_by_id.values():
-            if vehicle.get('lastUpdated'):
-                try:
-                    clean_ts = vehicle['lastUpdated'].replace('Z', '+00:00')
-                    last_updated_ts = datetime.fromisoformat(clean_ts).timestamp()
-                    
-                    if last_updated_ts > one_hour_ago:
-                        processed_vehicles.append(vehicle)
-                except ValueError:
-                    continue
-                    
-        return processed_vehicles
     except Exception as e:
         log(f"API Error: {e}")
         return None
 
 def save_periodic_data():
     vehicles = fetch_all_vehicle_data()
-    # If API fails (None), do not write anything
     if vehicles is None: return
 
-    # Even if list is empty (0 vehicles active), we still write the empty list 
-    # to show that the system is running but no buses are out.
-    
     now = datetime.now()
     output_data = {
         "Vehicles": []
     }
 
     for v in vehicles:
-        # Default fallback for color/name if missing
+        # Check for valid lat/lon before saving, but ignore time
+        if v.get('lat') is None or v.get('lon') is None:
+            continue
+
         r_name = v.get('routeName')
         if not r_name:
             r_name = "Out Of Service"
