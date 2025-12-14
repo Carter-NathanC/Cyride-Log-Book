@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     paths:
-      - 'scripts/web_interface.py'
+      - 'scripts/simple_server.py'
       - 'requirements.txt'
       - '.github/workflows/deploy_web.yml'
 
@@ -18,24 +18,23 @@ jobs:
     - name: Install Python Dependencies
       run: |
         /usr/bin/python3 -m pip install --upgrade pip
-        # Explicitly install Flask
-        /usr/bin/python3 -m pip install flask requests schedule openai-whisper pydub scipy numpy torch
+        # No flask needed anymore
+        /usr/bin/python3 -m pip install requests schedule openai-whisper pydub scipy numpy torch
 
     - name: Deploy Web Service
       run: |
-        SCRIPT_PATH=$(pwd)/scripts/web_interface.py
+        SCRIPT_PATH=$(pwd)/scripts/simple_server.py
         USER_NAME=$(whoami)
         
-        # Create systemd service with AmbientCapabilities for Port 80
         cat <<EOF > cyride-web.service
         [Unit]
-        Description=CyRide Web Interface
+        Description=CyRide Web Interface (SimpleServer)
         After=network.target
 
         [Service]
         Type=simple
         User=$USER_NAME
-        # This line is crucial for Port 80
+        # Required for Port 80
         AmbientCapabilities=CAP_NET_BIND_SERVICE
         ExecStart=/usr/bin/python3 -u $SCRIPT_PATH
         Restart=always
