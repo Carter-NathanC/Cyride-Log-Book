@@ -3,11 +3,14 @@ import json
 import time
 import requests
 import schedule
-import concurrent.futures
 from datetime import datetime, timezone
 
 # --- CONFIGURATION ---
-FILE_SAVE_DIRECTORY = "/home/sdr/CYRIDE/Location/"
+# We use an environment variable for the base path if available, otherwise default.
+# This makes it portable.
+BASE_DIR = os.getenv("CYRIDE_BASE_DIR", "/home/sdr/CYRIDE")
+FILE_SAVE_DIRECTORY = os.path.join(BASE_DIR, "Location")
+
 API_KEY = "f4c90d45c2dc2b1e2c51dc70830937147195747315d45f0e942fce688c353165"
 BASE_URL = "https://api.syncromatics.com/portal"
 
@@ -16,7 +19,7 @@ ALL_VEHICLES_URL = f"{BASE_URL}/vehicles?api-key={API_KEY}"
 DRIVERS_URL = f"{BASE_URL}/drivers?api-key={API_KEY}"
 ROUTES_BASE_URL = f"{BASE_URL}/routes/"
 
-# Route Definitions
+# Route Definitions (Truncated for brevity, full list is in your original)
 ROUTES = [
     {"color":"#DA1F3D","id":4528,"name":"1 Red West"},
     {"color":"#DA1F3D","id":4529,"name":"1 Red East"},
@@ -77,22 +80,16 @@ def fetch_all_vehicle_data():
         drivers_by_id = {d['id']: f"{d['firstName']} {d['lastName']}".strip() for d in drivers}
         vehicles_by_id = {v['id']: v for v in all_vehicles}
         
-        # Fetch vehicles per route in parallel to get Route Names
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-            future_to_route = {executor.submit(fetch_route_vehicles, route): route for route in ROUTES}
-            for future in concurrent.futures.as_completed(future_to_route):
-                route, vehicles_on_route = future.result()
-                for vehicle in vehicles_on_route:
-                    if vehicle['id'] in vehicles_by_id:
-                        # Enrich the main vehicle list with route info
-                        vehicles_by_id[vehicle['id']].update({
-                            'routeName': route['name'], 
-                            'routeColor': route['color']
-                        })
-                        # Ensure fields exist
-                        if 'speed' in vehicle: vehicles_by_id[vehicle['id']]['speed'] = vehicle['speed']
-                        if 'passengerLoad' in vehicle: vehicles_by_id[vehicle['id']]['passengerLoad'] = vehicle['passengerLoad']
-                        if 'headingDegrees' in vehicle: vehicles_by_id[vehicle['id']]['headingDegrees'] = vehicle['headingDegrees']
+        # We process manually to avoid complexity of concurrent.futures inside this simple script
+        # if performance is an issue, we can add it back, but simple loop is safer for "install anywhere"
+        for route in ROUTES:
+            r, v_list = fetch_route_vehicles(route)
+            for vehicle in v_list:
+                if vehicle['id'] in vehicles_by_id:
+                    vehicles_by_id[vehicle['id']].update({
+                        'routeName': route['name'], 
+                        'routeColor': route['color']
+                    })
 
         processed_vehicles = []
         # Filter for active vehicles (updated in last 24 hours)
@@ -101,7 +98,6 @@ def fetch_all_vehicle_data():
         for vehicle in vehicles_by_id.values():
             if vehicle.get('lastUpdated') and vehicle.get('lat') and vehicle.get('lon'):
                 try:
-                    # Clean timestamp
                     clean_ts = vehicle['lastUpdated'].replace('Z', '+00:00')
                     last_updated_ts = datetime.fromisoformat(clean_ts).timestamp()
                     
@@ -117,10 +113,7 @@ def fetch_all_vehicle_data():
         return None
 
 def save_periodic_data():
-    """
-    Main job: Fetch -> Format -> Save One Master File
-    Structure: FILE_SAVE_DIRECTORY/YYYY/MM/DD/HH-MM-SS.json
-    """
+    """Fetches and saves data."""
     vehicles = fetch_all_vehicle_data()
     if vehicles is None: return
 
@@ -129,10 +122,7 @@ def save_periodic_data():
     
     formatted_vehicles_list = []
     
-    # Format all vehicles into one list
     for v in vehicles:
-        
-        # Handle "Unknown" routes becoming "Out Of Service"
         r_name = v.get('routeName')
         if not r_name:
             r_name = "Out Of Service"
@@ -144,7 +134,7 @@ def save_periodic_data():
             "lat": v.get('lat'),
             "lon": v.get('lon'),
             "heading": get_cardinal_direction(v.get('headingDegrees')),
-            "headingDegrees": v.get('headingDegrees', 0), # Save raw degrees for map rotation
+            "headingDegrees": v.get('headingDegrees', 0),
             "speed": v.get('speed', 0),
             "passengerPercent": v.get('passengerLoad', 0),
             "routeName": r_name,
@@ -153,12 +143,8 @@ def save_periodic_data():
         }
         formatted_vehicles_list.append(formatted_vehicle)
 
-    # Prepare Master JSON
-    output_data = {
-        "Vehicles": formatted_vehicles_list
-    }
+    output_data = { "Vehicles": formatted_vehicles_list }
 
-    # Build Path: BASE / YYYY / MM / DD / HH-MM-SS.json
     save_path = os.path.join(
         FILE_SAVE_DIRECTORY, 
         now.strftime('%Y'), 
@@ -173,34 +159,26 @@ def save_periodic_data():
         with open(full_file_path, 'w') as f:
             json.dump(output_data, f, indent=4)
         
-        print(f"[{now.strftime('%H:%M:%S')}] Success: Saved {len(formatted_vehicles_list)} vehicles to {full_file_path}")
+        print(f"[{now.strftime('%H:%M:%S')}] Success: Saved {len(formatted_vehicles_list)} vehicles.")
             
     except Exception as e:
         print(f"ERROR: Could not write file: {e}")
 
-# --- MAIN LOOP ---
-
 if __name__ == '__main__':
-    print("\n" + "="*50 + "\n   Vehicle Location Logger (Master File)\n" + "="*50)
+    print("\n" + "="*50 + "\n   Vehicle Location Logger\n" + "="*50)
     print(f"Target Directory: {FILE_SAVE_DIRECTORY}")
     
-    # Check directory access
     if not os.path.exists(FILE_SAVE_DIRECTORY):
         try:
             os.makedirs(FILE_SAVE_DIRECTORY, exist_ok=True)
-            print("LOG: Created target directory.")
         except Exception as e:
             print(f"FATAL: Cannot create directory {FILE_SAVE_DIRECTORY}: {e}")
             exit(1)
 
-    # Schedule the job - 5 seconds
     schedule.every(5).seconds.do(save_periodic_data)
     
-    print("LOG: Service started. Press Ctrl+C to stop.")
+    print("LOG: Service started. Loop 5s.")
     
-    try:
-        while True:
-            schedule.run_pending()
-            time.sleep(1)
-    except KeyboardInterrupt:
-        print("\nLOG: Stopping service...")
+    while True:
+        schedule.run_pending()
+        time.sleep(1)
