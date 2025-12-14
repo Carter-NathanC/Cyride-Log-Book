@@ -14,43 +14,46 @@ jobs:
 
     - name: Install Python Dependencies
       run: |
-        # Upgrade pip and install requirements
-        python3 -m pip install --upgrade pip
-        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+        # Use system pip or runner's pip
+        /usr/bin/python3 -m pip install --upgrade pip
+        if [ -f requirements.txt ]; then /usr/bin/python3 -m pip install -r requirements.txt; fi
 
     - name: Setup Systemd Service
       run: |
-        # Get the absolute path to the script in the runner's workspace
         SCRIPT_PATH=$(pwd)/cymap_logger.py
         USER_NAME=$(whoami)
         
-        # Create a service file dynamically
-        echo "[Unit]
+        # 1. Create the service file content
+        cat <<EOF > cymap-logger.service
+        [Unit]
         Description=CyMap Location Logger (Git Runner Managed)
         After=network.target
 
         [Service]
         Type=simple
         User=$USER_NAME
-        # Use the runner's python executable or system python
         ExecStart=/usr/bin/python3 -u $SCRIPT_PATH
         Restart=always
         RestartSec=5
-        
-        # Set Environment Variable for Base Directory if needed
         Environment=CYRIDE_BASE_DIR=/home/sdr/CYRIDE
 
         [Install]
-        WantedBy=multi-user.target" > cymap-logger.service
+        WantedBy=multi-user.target
+        EOF
 
-        # Move service file to systemd directory (Requires sudo NOPASSWD for mv/systemctl)
-        sudo mv cymap-logger.service /etc/systemd/system/cymap-logger.service
+        # 2. Install the service file (Needs sudo)
+        echo "Installing service file..."
+        sudo cp cymap-logger.service /etc/systemd/system/cymap-logger.service
         
-        # Reload and Restart
+        # 3. Reload and Restart
+        echo "Reloading systemd..."
         sudo systemctl daemon-reload
+        echo "Enabling service..."
         sudo systemctl enable cymap-logger.service
+        echo "Restarting service..."
         sudo systemctl restart cymap-logger.service
 
-    - name: Verify Service Status
+    - name: Verify Status
       run: |
+        echo "Checking service status..."
         sudo systemctl status cymap-logger.service --no-pager
