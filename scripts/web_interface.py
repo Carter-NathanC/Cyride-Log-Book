@@ -33,8 +33,6 @@ def parse_filename_metadata(path):
     Format expected: hh_mm_ss-BusID.mp3 OR hh-mm-ss-BusID.mp3
     """
     basename = os.path.basename(path)
-    # Regex handles both _ and - separators for time, and - for BusID
-    # Matches: 14_30_05-1234.mp3 or 14-30-05-1234.mp3
     match = re.search(r'(\d{2})[_-](\d{2})[_-](\d{2})-(\d+)\.mp3', basename)
     if match:
         h, m, s, bus_id = match.groups()
@@ -49,7 +47,6 @@ def find_closest_location(date_obj, target_seconds, bus_id):
     """
     Finds the location data for a specific bus at a specific time (±10s).
     """
-    # Location files are at Location/YYYY/MM/DD/HH-MM-SS.json
     day_loc_dir = os.path.join(
         LOCATION_DIR, 
         date_obj.strftime('%Y'), 
@@ -60,17 +57,11 @@ def find_closest_location(date_obj, target_seconds, bus_id):
     if not os.path.exists(day_loc_dir):
         return None
 
-    # Search window: Target ± 10 seconds
-    # We generate potential filenames to avoid globbing thousands of files if possible,
-    # but since filenames are HH-MM-SS.json, we can iterate seconds.
-    
     best_match = None
-    
-    # Check 0s, +5s, -5s, +10s, -10s (Logger runs every 5s)
-    # We convert target_seconds back to HH-MM-SS to find file
-    search_offsets = [0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6, 7, -7, 8, -8, 9, -9, 10, -10]
-    
     found_vehicle_data = None
+    
+    # Check offsets: 0s, +1s, -1s ... up to ±10s
+    search_offsets = [0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6, 7, -7, 8, -8, 9, -9, 10, -10]
 
     for offset in search_offsets:
         check_sec = target_seconds + offset
@@ -88,9 +79,7 @@ def find_closest_location(date_obj, target_seconds, bus_id):
                 with open(filepath, 'r') as f:
                     data = json.load(f)
                     vehicles = data.get("Vehicles", [])
-                    # Find our specific bus
                     for v in vehicles:
-                        # API 'name' is usually the bus ID string "1234"
                         if v.get("name") == bus_id:
                             found_vehicle_data = v
                             break
@@ -139,10 +128,10 @@ def get_data():
             meta = parse_filename_metadata(path)
             
             item = {
-                "Time": t.get("Time"), # Keep original logged time for display if needed
+                "Time": t.get("Time"), 
                 "Text": t.get("Text"),
                 "Duration": t.get("Duration"),
-                "AudioPath": f"/audio?path={path}", # Proxy path
+                "AudioPath": f"/audio?path={path}", 
                 "BusID": "Unknown",
                 "Route": "Unknown",
                 "Color": "#333",
@@ -150,11 +139,9 @@ def get_data():
             }
 
             if meta:
-                # Use metadata from filename for better precision
                 item["BusID"] = meta["bus_id"]
-                item["Time"] = meta["time_str"] # Override with audio timestamp
+                item["Time"] = meta["time_str"] 
                 
-                # Find Location
                 loc_data = find_closest_location(dt, meta["seconds_of_day"], meta["bus_id"])
                 if loc_data:
                     item["Route"] = loc_data.get("routeName")
@@ -179,7 +166,6 @@ def stream_audio():
     path = request.args.get('path')
     if not path: abort(404)
     
-    # Security check: Ensure path is within BASE_DIR
     clean_path = os.path.abspath(path)
     if not clean_path.startswith(os.path.abspath(BASE_DIR)):
         abort(403)
@@ -225,14 +211,11 @@ HTML_TEMPLATE = """
         }
         .script-line:hover { background: #fcfcfc; }
 
-        /* Left Column: Time */
         .meta-col { width: 100px; flex-shrink: 0; font-family: monospace; font-size: 0.9rem; color: var(--text-secondary); text-align: right; padding-right: 20px; border-right: 2px solid #eee; margin-right: 20px; }
         .time { font-weight: bold; display: block; }
         
-        /* Right Column: Dialogue */
         .dialogue-col { flex-grow: 1; }
 
-        /* Bus Number */
         .unit-id { 
             font-weight: 800; 
             text-transform: uppercase; 
@@ -243,10 +226,9 @@ HTML_TEMPLATE = """
             padding: 2px 6px;
             border-radius: 4px;
             background: #eee;
-            position: relative; /* For tooltip positioning */
+            position: relative;
         }
         
-        /* Text */
         .speech { 
             font-size: 1.1rem; 
             line-height: 1.5;
@@ -257,7 +239,6 @@ HTML_TEMPLATE = """
         .speech:hover { color: #000; }
         .speech.playing { background: #e6ffe6; border-radius: 4px; padding: 0 5px; }
 
-        /* Map Tooltip */
         .tooltip { 
             visibility: hidden; 
             width: 250px; 
@@ -272,7 +253,7 @@ HTML_TEMPLATE = """
             transition: opacity 0.2s, visibility 0.2s; 
             box-shadow: 0 5px 20px rgba(0,0,0,0.2); 
             border: 1px solid #ddd; 
-            pointer-events: none; /* Prevents stuck hover */
+            pointer-events: none; 
         }
         
         .unit-id:hover .tooltip { visibility: visible; opacity: 1; pointer-events: auto; }
@@ -304,7 +285,6 @@ HTML_TEMPLATE = """
 <audio id="audio-player" controls></audio>
 
 <script>
-    // -- Setup Date --
     const tzOffset = new Date().getTimezoneOffset() * 60000; 
     const localISOTime = (new Date(Date.now() - tzOffset)).toISOString().split('T')[0];
     document.getElementById('date-picker').value = localISOTime;
@@ -315,7 +295,6 @@ HTML_TEMPLATE = """
         loadTranscript(document.getElementById('date-picker').value); 
     }
 
-    // Map Helper: Creates rotated arrow or dot
     function getArrowIcon(color, heading) {
         let rotation = 0, isDir = true;
         if(heading==null || heading==="" || heading=="N/A") isDir=false;
@@ -327,13 +306,10 @@ HTML_TEMPLATE = """
         return L.divIcon({html: svg, className: 'bus-marker-icon', iconSize: [24,24], iconAnchor:[12,12]});
     }
 
-    // Initialize/Update Map
     window.initMap = function(element, lat, lng, heading, color) {
         if (!element || !lat || !lng) return;
         
-        // Leaflet needs unique IDs or object references. We check if map exists on element.
         if (element._leaflet_map) {
-            // Already initialized, just ensure view is correct (fixes grey box issue on hover)
             setTimeout(() => {
                 element._leaflet_map.invalidateSize();
                 element._leaflet_map.setView([lat, lng], 16);
@@ -341,7 +317,6 @@ HTML_TEMPLATE = """
             return;
         }
 
-        // Initialize Map
         const map = L.map(element, {
             zoomControl: false, attributionControl: false, dragging: false,
             scrollWheelZoom: false, doubleClickZoom: false, boxZoom: false,
@@ -377,7 +352,6 @@ HTML_TEMPLATE = """
                 const hasLoc = entry.Location != null;
                 const color = entry.Color || "#333";
                 
-                // Location Vars
                 const lat = hasLoc ? entry.Location.Lat : 0;
                 const lng = hasLoc ? entry.Location.Long : 0;
                 const heading = hasLoc ? entry.Location.Heading : 0;
@@ -418,15 +392,6 @@ HTML_TEMPLATE = """
         }
     }
 
-    function playAudio(url, el) {
-        document.querySelectorAll('.speech').forEach(x => x.classList.remove('playing'));
-        el.classList.add('playing');
-        const player = document.getElementById('audio-player');
-        player.src = url;
-        player.play();
-    }
-
-    // Load default on start
     refreshLog();
 </script>
 </body>
@@ -434,7 +399,7 @@ HTML_TEMPLATE = """
 """
 
 if __name__ == '__main__':
-    log("--- CyRide Web Interface Starting ---")
+    log("--- CyRide Web Interface Starting on Port 80 ---")
     wait_for_drive()
-    # Run on all interfaces (0.0.0.0) so you can access it from outside the runner
-    app.run(host='0.0.0.0', port=5000)
+    # Runs on Port 80. Requires sudo or capability (handled by service file).
+    app.run(host='0.0.0.0', port=80)
