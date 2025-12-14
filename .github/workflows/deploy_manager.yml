@@ -12,6 +12,10 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v3
 
+    - name: Install Dependencies
+      run: |
+        /usr/bin/python3 -m pip install --upgrade pip requests schedule
+
     - name: Deploy Manager Service
       run: |
         SCRIPT_PATH=$(pwd)/scripts/queue_manager.py
@@ -25,7 +29,7 @@ jobs:
         [Service]
         Type=simple
         User=$USER_NAME
-        # Run in Live Mode by default
+        # Run in Live Mode (no args) by default
         ExecStart=/usr/bin/python3 -u $SCRIPT_PATH
         Restart=always
         RestartSec=10
