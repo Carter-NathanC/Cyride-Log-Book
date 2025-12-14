@@ -13,6 +13,7 @@ BASE_DIR = os.getenv("CYRIDE_BASE_DIR", os.path.abspath("CYRIDE_DATA"))
 TRANSCRIPT_DIR = os.path.join(BASE_DIR, "Transcriptions")
 LOCATION_DIR = os.path.join(BASE_DIR, "Location")
 MOUNT_DIR = os.path.join(BASE_DIR, "SDR Recordings")
+STATE_DIR = os.path.join(BASE_DIR, "states") # Ensure we know where states are
 PORT = 8000
 
 # --- HTML CONTENT ---
@@ -35,14 +36,25 @@ HTML_CONTENT = """<!DOCTYPE html>
         body { font-family: 'Georgia', serif; background: var(--bg-color); color: var(--text-primary); margin: 0; padding: 20px; }
         
         .container { max-width: 900px; margin: 0 auto; background: var(--paper-color); padding: 40px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); min-height: 90vh; }
-        header { border-bottom: 2px solid var(--text-primary); margin-bottom: 30px; display: flex; justify-content: space-between; align-items: center; }
+        header { border-bottom: 2px solid var(--text-primary); margin-bottom: 30px; }
+        .header-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
         h1 { margin: 0; font-size: 2rem; }
         
+        /* Tabs */
+        .tabs { display: flex; gap: 5px; border-bottom: 1px solid #ddd; margin-bottom: 20px; }
+        .tab { padding: 10px 20px; cursor: pointer; background: #eee; border-radius: 5px 5px 0 0; border: 1px solid transparent; font-weight: bold; color: #666; }
+        .tab.active { background: white; border-color: #ddd; border-bottom-color: white; color: var(--accent); }
+        
+        .view-section { display: none; }
+        .view-section.active { display: block; }
+
+        /* Controls */
         .controls { display: flex; gap: 10px; }
         input[type="date"] { padding: 8px; font-size: 1rem; }
         button { padding: 8px 12px; cursor: pointer; }
         #sort-btn { min-width: 120px; }
 
+        /* Transcript Logs */
         .script-line { margin-bottom: 24px; display: flex; align-items: baseline; position: relative; animation: fadeIn 0.3s ease-in; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
         
@@ -82,9 +94,21 @@ HTML_CONTENT = """<!DOCTYPE html>
         .tooltip-header { padding: 10px; background: #f8f9fa; border-bottom: 1px solid #e9ecef; font-weight: bold; font-size: 0.85rem; display: flex; justify-content: space-between; border-radius: 8px 8px 0 0; }
         .tooltip-map { height: 250px; width: 100%; background: #e9ecef; display: block; }
         .tooltip-footer { padding: 8px; background: #fff; font-size: 0.75rem; color: #666; border-top: 1px solid #e9ecef; text-align: center; border-radius: 0 0 8px 8px; }
-        
         .bus-marker-icon { background: transparent; border: none; }
         
+        /* Worker Status Table */
+        .status-container { max-height: 70vh; overflow-y: auto; border: 1px solid #eee; border-radius: 4px; padding: 10px; font-family: monospace; }
+        .status-row { padding: 5px 10px; border-bottom: 1px solid #f0f0f0; display: flex; justify-content: space-between; }
+        .status-row:last-child { border-bottom: none; }
+        .status-file { flex-grow: 1; }
+        .status-badge { font-weight: bold; text-transform: uppercase; font-size: 0.8rem; padding: 2px 6px; border-radius: 4px; color: #fff; min-width: 80px; text-align: center;}
+        
+        .st-processed { background-color: #28a745; } /* Green */
+        .st-queue { background-color: #ffc107; color: #333; } /* Yellow */
+        .st-processing { background-color: #fd7e14; } /* Orange */
+        .st-error { background-color: #dc3545; } /* Red */
+        .st-unknown { background-color: #6c757d; } /* Grey */
+
         /* Sticky Audio Player */
         .audio-dock { position: fixed; bottom: 0; left: 0; right: 0; background: white; border-top: 1px solid #ccc; padding: 10px; display: flex; justify-content: center; box-shadow: 0 -2px 10px rgba(0,0,0,0.1); z-index: 10000; }
         #audio-player { width: 100%; max-width: 600px; display: block; }
@@ -97,15 +121,34 @@ HTML_CONTENT = """<!DOCTYPE html>
 
 <div class="container">
     <header>
-        <h1>CyRide Dispatch Log</h1>
-        <div class="controls">
-            <input type="date" id="date-picker">
-            <button id="sort-btn" onclick="toggleSort()">Sort: ⬆ Time</button>
-            <button onclick="refreshLog()">Refresh</button>
+        <div class="header-row">
+            <h1>CyRide Dispatch Log</h1>
+            <div class="controls">
+                <input type="date" id="date-picker">
+                <button onclick="refreshCurrentView()">Refresh</button>
+            </div>
+        </div>
+        <div class="tabs">
+            <div class="tab active" onclick="switchTab('logs')">Transcripts</div>
+            <div class="tab" onclick="switchTab('worker')">Worker Status</div>
         </div>
     </header>
-    <div id="log-container"></div>
-    <div id="loading-indicator" class="loader" style="display:none;">Loading more...</div>
+
+    <!-- Transcripts View -->
+    <div id="view-logs" class="view-section active">
+        <div style="margin-bottom:15px; text-align:right;">
+            <button id="sort-btn" onclick="toggleSort()">Sort: ⬆ Time</button>
+        </div>
+        <div id="log-container"></div>
+        <div id="loading-indicator" class="loader" style="display:none;">Loading more...</div>
+    </div>
+
+    <!-- Worker Status View -->
+    <div id="view-worker" class="view-section">
+        <div id="worker-container" class="status-container">
+            <div class="loader">Loading status...</div>
+        </div>
+    </div>
 </div>
 
 <div class="audio-dock">
@@ -116,27 +159,97 @@ HTML_CONTENT = """<!DOCTYPE html>
     const FALLBACK_LOC = { lat: 42.027726571599906, lng: -93.63560572572788 };
     const tzOffset = new Date().getTimezoneOffset() * 60000; 
     const localISOTime = (new Date(Date.now() - tzOffset)).toISOString().slice(0, -1).split('T')[0];
-    document.getElementById('date-picker').value = localISOTime;
     
-    document.getElementById('date-picker').addEventListener('change', (e) => loadTranscript(e.target.value));
-    
-    // Globals for pagination & sorting
+    // Globals
+    let currentView = 'logs';
     let currentOffset = 0;
     let activeDateStr = localISOTime;
     let stopLoading = false;
-    let sortOrder = 'asc'; // 'asc' = Oldest First (Default), 'desc' = Newest First
+    let sortOrder = 'asc'; 
 
-    function refreshLog() { loadTranscript(document.getElementById('date-picker').value); }
-    
-    function toggleSort() {
-        // Toggle sort order
-        sortOrder = (sortOrder === 'asc') ? 'desc' : 'asc';
-        // Update button text
-        document.getElementById('sort-btn').innerText = (sortOrder === 'asc') ? "Sort: ⬆ Time" : "Sort: ⬇ Time";
-        // Reload data
-        loadTranscript(document.getElementById('date-picker').value);
+    // Init Date
+    const dateInput = document.getElementById('date-picker');
+    dateInput.value = localISOTime;
+    dateInput.addEventListener('change', (e) => {
+        activeDateStr = e.target.value;
+        refreshCurrentView();
+    });
+
+    function switchTab(tabName) {
+        currentView = tabName;
+        // Toggle UI
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.view-section').forEach(v => v.classList.remove('active'));
+        
+        const tabEl = document.querySelector(`.tab[onclick="switchTab('${tabName}')"]`);
+        if(tabEl) tabEl.classList.add('active');
+        document.getElementById(`view-${tabName}`).classList.add('active');
+        
+        refreshCurrentView();
     }
 
+    function refreshCurrentView() {
+        if(currentView === 'logs') {
+            loadTranscript(activeDateStr);
+        } else {
+            loadWorkerStatus(activeDateStr);
+        }
+    }
+    
+    function toggleSort() {
+        sortOrder = (sortOrder === 'asc') ? 'desc' : 'asc';
+        document.getElementById('sort-btn').innerText = (sortOrder === 'asc') ? "Sort: ⬆ Time" : "Sort: ⬇ Time";
+        loadTranscript(activeDateStr);
+    }
+
+    // --- WORKER STATUS LOGIC ---
+    async function loadWorkerStatus(dateStr) {
+        const container = document.getElementById('worker-container');
+        container.innerHTML = '<div class="loader">Loading status...</div>';
+        
+        try {
+            const res = await fetch(`/api/status?date=${dateStr}`);
+            if (!res.ok) throw new Error("Status not found");
+            const data = await res.json();
+            
+            if (Object.keys(data).length === 0) {
+                container.innerHTML = '<div class="loader">No worker history for this date.</div>';
+                return;
+            }
+
+            container.innerHTML = '';
+            
+            // Sort keys (filenames)
+            const files = Object.keys(data).sort();
+            // Optional: reverse to show newest added first
+            files.reverse();
+
+            files.forEach(f => {
+                const info = data[f];
+                const status = info.status || 'unknown';
+                const filename = f.split('/').pop(); // Show just filename
+                
+                let badgeClass = 'st-unknown';
+                if (status === 'processed') badgeClass = 'st-processed';
+                else if (status === 'queue') badgeClass = 'st-queue';
+                else if (status === 'processing') badgeClass = 'st-processing';
+                else if (status === 'error') badgeClass = 'st-error';
+
+                const div = document.createElement('div');
+                div.className = 'status-row';
+                div.innerHTML = `
+                    <div class="status-file">${filename}</div>
+                    <div class="status-badge ${badgeClass}">${status}</div>
+                `;
+                container.appendChild(div);
+            });
+
+        } catch (e) {
+            container.innerHTML = `<div class="loader">Error: ${e.message}</div>`;
+        }
+    }
+
+    // --- MAP & TRANSCRIPT LOGIC ---
     function getArrowIcon(color, headingDegrees, isOOS) {
         let useDot = false;
         if (isOOS || headingDegrees == null || headingDegrees === "" || isNaN(headingDegrees)) {
@@ -178,16 +291,14 @@ HTML_CONTENT = """<!DOCTYPE html>
     }
 
     async function loadTranscript(dateStr) {
-        // Reset State
         activeDateStr = dateStr;
         currentOffset = 0;
-        stopLoading = true; // Signal previous chain to stop
+        stopLoading = true; 
         
         const container = document.getElementById('log-container');
         container.innerHTML = '';
         document.getElementById('loading-indicator').style.display = 'block';
         
-        // Slight delay to allow flags to propagate
         await new Promise(r => setTimeout(r, 50));
         stopLoading = false;
         
@@ -196,15 +307,12 @@ HTML_CONTENT = """<!DOCTYPE html>
 
     async function fetchNextBatch() {
         if (stopLoading) return;
-        
         const indicator = document.getElementById('loading-indicator');
         try {
-            // Fetch 10 items starting at currentOffset, passing sort param
             const res = await fetch(`/api/data?date=${activeDateStr}&offset=${currentOffset}&limit=10&sort=${sortOrder}`);
             if(!res.ok) throw new Error("API Error");
             const data = await res.json();
             
-            // Abort if user switched dates while fetching
             if (stopLoading) return;
 
             if (data.entries.length === 0 && currentOffset === 0) {
@@ -217,7 +325,6 @@ HTML_CONTENT = """<!DOCTYPE html>
             
             if (data.has_more) {
                 currentOffset += 10;
-                // Automatically fetch next batch
                 fetchNextBatch(); 
             } else {
                 indicator.style.display = 'none';
@@ -284,7 +391,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         player.play();
     }
 
-    // Initial Load
+    // Initial Load (Default to Logs tab)
     loadTranscript(localISOTime);
 </script>
 </body>
@@ -373,7 +480,7 @@ class CyRideHandler(BaseHTTPRequestHandler):
         path = parsed_path.path
         query = urllib.parse.parse_qs(parsed_path.query)
 
-        # 1. API: GET DATA (Paginated)
+        # 1. API: GET TRANSCRIPT DATA
         if path == '/api/data':
             self.send_response(200)
             self.send_header('Content-type', 'application/json')
@@ -383,19 +490,12 @@ class CyRideHandler(BaseHTTPRequestHandler):
             response_data = {"status": {"mounted": os.path.exists(MOUNT_DIR)}, "entries": [], "has_more": False}
             
             if 'date' in query:
-                date_str = query['date'][0]
-                # Default to offset 0, limit 10
-                try:
-                    offset = int(query.get('offset', [0])[0])
+                date_str = query.get('date', [None])[0]
+                try: offset = int(query.get('offset', [0])[0])
                 except: offset = 0
-                
-                try:
-                    limit = int(query.get('limit', [10])[0])
+                try: limit = int(query.get('limit', [10])[0])
                 except: limit = 10
-                
-                # Get Sort Order ('asc' or 'desc')
-                try:
-                    sort_order = query.get('sort', ['asc'])[0]
+                try: sort_order = query.get('sort', ['asc'])[0]
                 except: sort_order = 'asc'
                 
                 try:
@@ -411,21 +511,15 @@ class CyRideHandler(BaseHTTPRequestHandler):
                         with open(transcript_path, 'r') as f:
                             transcripts = json.load(f)
                         
-                        # 1. Sort Order
-                        if sort_order == 'desc':
-                            transcripts.reverse()
-                        # else: 'asc' is default file order (oldest first)
+                        if sort_order == 'desc': transcripts.reverse()
                         
-                        # 2. Slice for Pagination
                         total_items = len(transcripts)
                         chunk = transcripts[offset : offset + limit]
                         response_data["has_more"] = (offset + limit) < total_items
                         
-                        # 3. Process ONLY this chunk (Heavy Logic)
                         for t in chunk:
                             file_path = t.get("Path", "")
                             meta = parse_filename_metadata(file_path)
-                            
                             if not meta: continue 
                             
                             item = {
@@ -439,9 +533,7 @@ class CyRideHandler(BaseHTTPRequestHandler):
                                 "Location": {}
                             }
                             
-                            # Expensive Location Lookup happens ONLY for these 10 items
                             loc = find_closest_location(dt, meta["seconds_of_day"], meta["bus_id"])
-                            
                             if loc:
                                 r_name, r_color = process_route_name(loc.get("routeName"), meta["bus_id"])
                                 item["Route"] = r_name
@@ -458,14 +550,39 @@ class CyRideHandler(BaseHTTPRequestHandler):
                                 item["Color"] = r_color if r_color else "#888"
 
                             response_data["entries"].append(item)
-                            
-                except Exception as e:
-                    log(f"API Error: {e}")
+                except Exception as e: log(f"API Error: {e}")
 
             self.wfile.write(json.dumps(response_data).encode('utf-8'))
             return
 
-        # 2. API: AUDIO STREAMING
+        # 2. API: GET WORKER STATUS (NEW)
+        elif path == '/api/status':
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.end_headers()
+            
+            status_data = {}
+            if 'date' in query:
+                date_str = query.get('date', [None])[0]
+                try:
+                    dt = datetime.strptime(date_str, '%Y-%m-%d')
+                    # State files are stored as YYYY/MM/DD.json
+                    state_file_path = os.path.join(
+                        STATE_DIR,
+                        dt.strftime('%Y'),
+                        dt.strftime('%m'),
+                        f"{dt.strftime('%d')}.json"
+                    )
+                    
+                    if os.path.exists(state_file_path):
+                        with open(state_file_path, 'r') as f:
+                            status_data = json.load(f)
+                except Exception as e: log(f"Status API Error: {e}")
+            
+            self.wfile.write(json.dumps(status_data).encode('utf-8'))
+            return
+
+        # 3. API: AUDIO STREAMING
         elif path == '/audio':
             if 'path' in query:
                 file_path = query['path'][0]
@@ -480,14 +597,12 @@ class CyRideHandler(BaseHTTPRequestHandler):
                         with open(file_path, 'rb') as f:
                             shutil.copyfileobj(f, self.wfile)
                         return
-                    except Exception as e:
-                        log(f"Audio Serve Error: {e}")
-            
+                    except Exception as e: log(f"Audio Serve Error: {e}")
             self.send_response(404)
             self.end_headers()
             return
 
-        # 3. UI: SERVE HTML
+        # 4. UI: SERVE HTML
         else:
             self.send_response(200)
             self.send_header('Content-type', 'text/html')
@@ -501,7 +616,6 @@ class ThreadingHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
 def main():
     log("--- CyRide Simple Server Starting ---")
     log(f"Serving on Port {PORT}...")
-    
     try:
         server_address = ('0.0.0.0', PORT)
         httpd = ThreadingHTTPServer(server_address, CyRideHandler)
