@@ -511,7 +511,17 @@ class CyRideHandler(BaseHTTPRequestHandler):
                         with open(transcript_path, 'r') as f:
                             transcripts = json.load(f)
                         
-                        if sort_order == 'desc': transcripts.reverse()
+                        # --- ENFORCE TIMESTAMP SORTING ---
+                        # Extract timestamps for sorting
+                        def get_timestamp(entry):
+                            meta = parse_filename_metadata(entry.get("Path", ""))
+                            return meta["seconds_of_day"] if meta else -1
+                        
+                        # Sort based on parsed filename time
+                        transcripts.sort(key=get_timestamp)
+                        
+                        if sort_order == 'desc':
+                            transcripts.reverse()
                         
                         total_items = len(transcripts)
                         chunk = transcripts[offset : offset + limit]
