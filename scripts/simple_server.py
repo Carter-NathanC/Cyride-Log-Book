@@ -230,8 +230,6 @@ def determine_channel(path):
     return "UNK"
 
 def find_closest_location(date_obj, target_seconds, bus_id):
-    # Optimized search: Looks for HH/MM/SS.json 
-    # Searches 0 to -10 seconds (closest past time)
     search_offsets = [0, -1, -2, -3, -4, -5, -6, -7, -8, -9, -10]
 
     for offset in search_offsets:
@@ -242,18 +240,8 @@ def find_closest_location(date_obj, target_seconds, bus_id):
         m = (check_sec % 3600) // 60
         s = check_sec % 60
         
-        # New optimized path: Location/YYYY/MM/DD/HH/MM/SS.json
-        full_path = os.path.join(
-            LOCATION_DIR, 
-            date_obj.strftime('%Y'), 
-            date_obj.strftime('%m'), 
-            date_obj.strftime('%d'),
-            f"{h:02d}",
-            f"{m:02d}",
-            f"{s:02d}.json"
-        )
+        full_path = os.path.join(LOCATION_DIR, date_obj.strftime('%Y'), date_obj.strftime('%m'), date_obj.strftime('%d'), f"{h:02d}", f"{m:02d}", f"{s:02d}.json")
         
-        # Cache Check
         if full_path in FILE_CACHE:
             data = FILE_CACHE[full_path]
         elif os.path.exists(full_path):
@@ -265,12 +253,10 @@ def find_closest_location(date_obj, target_seconds, bus_id):
         else:
             continue
 
-        # File found (either in cache or just loaded), now search vehicles
         vehicles = data.get("Vehicles", [])
         for v in vehicles:
             if str(v.get("name")) == str(bus_id):
-                return v # Found the bus in the closest past file
-    
+                return v 
     return None
 
 def process_route_name(route_name, bus_id):
@@ -339,7 +325,12 @@ class CyRideHandler(BaseHTTPRequestHandler):
                                 r_name, r_color = process_route_name(loc.get("routeName"), meta["bus_id"])
                                 item["Route"] = r_name
                                 item["Color"] = r_color if r_color else loc.get("routeColor", "#333")
-                                item["Location"] = { "Lat": loc.get("lat"), "Long": loc.get("lon"), "Heading": loc.get("headingDegrees"), "Speed": loc.get("speed") }
+                                item["Location"] = { 
+                                    "Lat": loc.get("lat"), 
+                                    "Long": loc.get("lon"), 
+                                    "Heading": loc.get("headingDegrees"), # CRITICAL FIX: Send degrees, not cardinal char
+                                    "Speed": loc.get("speed") 
+                                }
                             else:
                                 r_name, r_color = process_route_name(None, meta["bus_id"])
                                 item["Route"] = r_name
