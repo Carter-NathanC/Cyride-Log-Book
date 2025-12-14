@@ -1,2 +1,7 @@
 requests
 schedule
+openai-whisper
+pydub
+scipy
+numpy
+torch
