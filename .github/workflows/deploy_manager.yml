@@ -1,0 +1,41 @@
+name: Deploy Queue Manager
+
+on:
+  push:
+    paths:
+      - 'scripts/queue_manager.py'
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+
+    - name: Deploy Manager Service
+      run: |
+        SCRIPT_PATH=$(pwd)/scripts/queue_manager.py
+        USER_NAME=$(whoami)
+        
+        cat <<EOF > cyride-manager.service
+        [Unit]
+        Description=CyRide Queue Manager (Live Watcher)
+        After=network.target
+
+        [Service]
+        Type=simple
+        User=$USER_NAME
+        # Run in Live Mode by default
+        ExecStart=/usr/bin/python3 -u $SCRIPT_PATH
+        Restart=always
+        RestartSec=10
+        Environment=CYRIDE_BASE_DIR=/home/sdr/CYRIDE
+
+        [Install]
+        WantedBy=multi-user.target
+        EOF
+
+        sudo cp cyride-manager.service /etc/systemd/system/cyride-manager.service
+        sudo systemctl daemon-reload
+        sudo systemctl enable cyride-manager.service
+        sudo systemctl restart cyride-manager.service
