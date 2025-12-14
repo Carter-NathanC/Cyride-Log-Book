@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 BASE_DIR = os.getenv("CYRIDE_BASE_DIR", os.path.abspath("CYRIDE_DATA"))
 MOUNT_DIR = os.path.join(BASE_DIR, "SDR Recordings")
 STATE_DIR = os.path.join(BASE_DIR, "states")
+TRANSCRIPT_DIR = os.path.join(BASE_DIR, "Transcriptions")
 GROUPS = ["CYRIDE-CIRC", "CYRIDE-FIXED"]
 
 def log(msg):
@@ -34,6 +35,20 @@ def load_state(date_obj):
             return None
     return {}
 
+def load_transcriptions(date_obj):
+    path = os.path.join(TRANSCRIPT_DIR, date_obj.strftime('%Y'), date_obj.strftime('%m'), f"{date_obj.strftime('%d')}.json")
+    processed_paths = set()
+    if os.path.exists(path):
+        try:
+            with open(path, 'r') as f:
+                data = json.load(f)
+                for entry in data:
+                    if "Path" in entry:
+                        processed_paths.add(entry["Path"])
+        except Exception:
+            pass
+    return processed_paths
+
 def save_state(date_obj, state_data):
     path = os.path.join(STATE_DIR, date_obj.strftime('%Y'), date_obj.strftime('%m'), f"{date_obj.strftime('%d')}.json")
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -57,6 +72,7 @@ def scan_date(date_obj):
     # Safety Check: If state read failed, STOP. Do not overwrite.
     if state_data is None: return
 
+    processed_files = load_transcriptions(date_obj)
     state_changed = False
     current_time_str = datetime.now().isoformat()
     year_str = date_obj.strftime('%Y')
@@ -75,9 +91,15 @@ def scan_date(date_obj):
                 full_path = os.path.join(day_path, f)
                 if full_path not in state_data:
                     log(f"Found New File: {f}")
+                    
+                    status = "queue"
+                    if full_path in processed_files:
+                        status = "processed"
+                        log(f"  -> Already in transcriptions. Marking processed.")
+
                     state_data[full_path] = {
                         "Path": full_path,
-                        "status": "queue",
+                        "status": status,
                         "TimeAdded": current_time_str
                     }
                     state_changed = True
