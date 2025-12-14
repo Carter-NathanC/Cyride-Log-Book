@@ -16,7 +16,6 @@ MOUNT_DIR = os.path.join(BASE_DIR, "SDR Recordings")
 PORT = 8000
 
 # --- HTML CONTENT ---
-# This matches your requested styling and logic exactly.
 HTML_CONTENT = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -71,7 +70,7 @@ HTML_CONTENT = """<!DOCTYPE html>
             font-family: sans-serif; 
             box-shadow: 0 4px 20px rgba(0,0,0,0.4); 
             border: 1px solid #ccc; 
-            pointer-events: none; /* Important for hover stability */
+            pointer-events: none; 
             display: block;
         }
         
@@ -83,9 +82,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         
         .bus-marker-icon { background: transparent; border: none; }
         
-        audio { display: none; }
-        
-        /* Sticky Audio Player Dock */
+        /* Sticky Audio Player */
         .audio-dock { position: fixed; bottom: 0; left: 0; right: 0; background: white; border-top: 1px solid #ccc; padding: 10px; display: flex; justify-content: center; box-shadow: 0 -2px 10px rgba(0,0,0,0.1); z-index: 10000; }
         #audio-player { width: 100%; max-width: 600px; display: block; }
     </style>
@@ -109,7 +106,8 @@ HTML_CONTENT = """<!DOCTYPE html>
 </div>
 
 <script>
-    const AMES_DEFAULT = { lat: 42.0282, lng: -93.6434 };
+    // Fallback Location provided by user
+    const FALLBACK_LOC = { lat: 42.027726571599906, lng: -93.63560572572788 };
 
     // -- Date Setup --
     const tzOffset = new Date().getTimezoneOffset() * 60000; 
@@ -119,20 +117,35 @@ HTML_CONTENT = """<!DOCTYPE html>
     document.getElementById('date-picker').addEventListener('change', (e) => loadTranscript(e.target.value));
     function refreshLog() { loadTranscript(document.getElementById('date-picker').value); }
 
-    function getArrowIcon(color, heading) {
-        let rotation = 0, isDir = true;
-        if(heading==null || heading==="" || heading=="N/A") isDir=false;
-        else if(typeof heading === 'string') isDir=false; 
-        else rotation=heading;
+    // Generates the icon: Arrow if moving/headed, Dot if OOS/Stopped
+    function getArrowIcon(color, headingDegrees, isOOS) {
+        let useDot = false;
         
-        let svg = isDir ? 
-            `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="${color}" stroke="white" stroke-width="2" style="transform: rotate(${rotation}deg); transform-origin: center;"><polygon points="12 2 2 22 12 18 22 22 12 2"></polygon></svg>` : 
-            `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" fill="${color}" stroke="white" stroke-width="2"/></svg>`;
-        return L.divIcon({html: svg, className: 'bus-marker-icon', iconSize: [24,24], iconAnchor:[12,12]});
+        // If Out of Service, or heading is invalid/missing, use dot
+        if (isOOS || headingDegrees == null || headingDegrees === "" || isNaN(headingDegrees)) {
+            useDot = true;
+        }
+
+        if (useDot) {
+             return L.divIcon({
+                html: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><circle cx="12" cy="12" r="7" fill="${color}" stroke="white" stroke-width="2"/></svg>`,
+                className: 'bus-marker-icon', 
+                iconSize: [24,24], 
+                iconAnchor:[12,12]
+            });
+        }
+        
+        // Arrow rotated by heading degrees
+        return L.divIcon({
+            html: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="${color}" stroke="white" stroke-width="2" style="transform: rotate(${headingDegrees}deg); transform-origin: center;"><polygon points="12 2 2 22 12 18 22 22 12 2"></polygon></svg>`,
+            className: 'bus-marker-icon', 
+            iconSize: [24,24], 
+            iconAnchor:[12,12]
+        });
     }
 
     // Map Initialization
-    window.initMap = function(element, lat, lng, heading, color) {
+    window.initMap = function(element, lat, lng, heading, color, isOOS) {
         if (!element || !lat || !lng) return;
         const mapId = element.id;
 
@@ -156,7 +169,7 @@ HTML_CONTENT = """<!DOCTYPE html>
                 maxZoom: 19, attribution: ''
             }).addTo(map);
 
-            L.marker([lat, lng], {icon: getArrowIcon(color, heading)}).addTo(map);
+            L.marker([lat, lng], {icon: getArrowIcon(color, heading, isOOS)}).addTo(map);
             
             element._leaflet_map = map;
             map.invalidateSize();
@@ -189,25 +202,25 @@ HTML_CONTENT = """<!DOCTYPE html>
                 
                 const uniqueMapId = `map-${index}`;
                 const color = entry.Color || '#333';
+                const isOOS = (entry.Route === "Out Of Service" || entry.Route === "DISPATCH");
                 
                 const headingVal = hasLoc ? (loc.Heading !== undefined ? loc.Heading : null) : null;
-                const mapLat = hasLoc ? loc.Lat : AMES_DEFAULT.lat;
-                const mapLng = hasLoc ? loc.Long : AMES_DEFAULT.lng;
+                const mapLat = hasLoc ? loc.Lat : FALLBACK_LOC.lat;
+                const mapLng = hasLoc ? loc.Long : FALLBACK_LOC.lng;
                 const mapColor = hasLoc ? color : '#888';
 
                 const tooltipHTML = `
                     <div class="tooltip">
                         <div class="tooltip-header">
                             <span>${entry.Route}</span>
-                            <span>${loc.Speed ? Math.round(loc.Speed) + ' mph' : ''}</span>
+                            <span>${loc.Speed ? Math.round(loc.Speed) + ' mph' : '0 mph'}</span>
                         </div>
                         <div id="${uniqueMapId}" class="tooltip-map"></div>
                         <div class="tooltip-footer">
-                            ${hasLoc ? `Lat: ${loc.Lat.toFixed(4)}, Lng: ${loc.Long.toFixed(4)}` : "Defaulting to Ames, IA"}
+                            ${hasLoc ? `Lat: ${loc.Lat.toFixed(4)}, Lng: ${loc.Long.toFixed(4)}` : "Position Unavailable"}
                         </div>
                     </div>`;
                 
-                // Audio path logic handled by backend redirect
                 const audioPath = `/audio?path=${encodeURIComponent(entry.AudioPath)}`;
                 
                 row.innerHTML = `
@@ -217,7 +230,7 @@ HTML_CONTENT = """<!DOCTYPE html>
                     </div>
                     <div class="dialogue-col">
                         <div class="unit-id" style="color:${color}" 
-                             onmouseenter="window.initMap(this.querySelector('.tooltip-map'), ${mapLat}, ${mapLng}, ${headingVal}, '${mapColor}')">
+                             onmouseenter="window.initMap(this.querySelector('.tooltip-map'), ${mapLat}, ${mapLng}, ${headingVal}, '${mapColor}', ${isOOS})">
                             [${entry.BusID}]
                             ${tooltipHTML}
                         </div>
@@ -255,7 +268,6 @@ def parse_filename_metadata(path):
     Returns: { "h": 14, "m": 30, "s": 5, "bus_id": "1234" }
     """
     basename = os.path.basename(path)
-    # Regex for HH_MM_SS-BusID.mp3 (Handle _ or - separators)
     match = re.search(r'(\d{2})[_-](\d{2})[_-](\d{2})-(.+)\.mp3', basename)
     if match:
         h, m, s, bus_id = match.groups()
@@ -276,13 +288,11 @@ def format_time_12hr(h, m, s):
     return f"{h}:{m:02d}:{s:02d} {period}"
 
 def determine_channel(path):
-    """Returns 'CIRC' or 'FIXED' based on folder path"""
     if "CYRIDE-CIRC" in path: return "CIRC"
     if "CYRIDE-FIXED" in path: return "FIXED"
     return "UNK"
 
 def find_closest_location(date_obj, target_seconds, bus_id):
-    """Finds vehicle location data in JSON files close to the timestamp."""
     day_loc_dir = os.path.join(
         LOCATION_DIR, 
         date_obj.strftime('%Y'), 
@@ -293,19 +303,16 @@ def find_closest_location(date_obj, target_seconds, bus_id):
     if not os.path.exists(day_loc_dir):
         return None
 
-    # Search window: Target ± 5 seconds
     search_offsets = [0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5]
 
     for offset in search_offsets:
         check_sec = target_seconds + offset
         if check_sec < 0 or check_sec >= 86400: continue
         
-        # Calculate H-M-S for filename
         h = check_sec // 3600
         m = (check_sec % 3600) // 60
         s = check_sec % 60
         
-        # Location logger saves as H-M-S.json
         filename = f"{h:02d}-{m:02d}-{s:02d}.json"
         filepath = os.path.join(day_loc_dir, filename)
         
@@ -315,7 +322,7 @@ def find_closest_location(date_obj, target_seconds, bus_id):
                     data = json.load(f)
                     vehicles = data.get("Vehicles", [])
                     for v in vehicles:
-                        # Match Bus ID (name in JSON)
+                        # Convert both to string to ensure matching numbers vs strings
                         if str(v.get("name")) == str(bus_id):
                             return v
             except:
@@ -323,12 +330,11 @@ def find_closest_location(date_obj, target_seconds, bus_id):
     return None
 
 def process_route_name(route_name, bus_id):
-    """Logic to label Out of Service or Dispatch"""
     if not route_name or route_name == "Out Of Service":
-        if bus_id in ["CY-BASE", "MOBILE"]:
+        if str(bus_id) in ["CY-BASE", "MOBILE"]:
             return "DISPATCH", "#333"
-        return "Out Of Service", "#888"
-    return route_name, None # Return None color to keep original
+        return "Out Of Service", "#808080"
+    return route_name, None 
 
 # --- REQUEST HANDLER ---
 
@@ -362,14 +368,12 @@ class CyRideHandler(BaseHTTPRequestHandler):
                         with open(transcript_path, 'r') as f:
                             transcripts = json.load(f)
                         
-                        # Process each transcript line
                         for t in transcripts:
                             file_path = t.get("Path", "")
                             meta = parse_filename_metadata(file_path)
                             
-                            if not meta: continue # Skip files we can't parse
+                            if not meta: continue 
                             
-                            # Base Item
                             item = {
                                 "Text": t.get("Text", ""),
                                 "AudioPath": file_path,
@@ -381,7 +385,6 @@ class CyRideHandler(BaseHTTPRequestHandler):
                                 "Location": {}
                             }
                             
-                            # Find Location
                             loc = find_closest_location(dt, meta["seconds_of_day"], meta["bus_id"])
                             
                             if loc:
@@ -391,14 +394,13 @@ class CyRideHandler(BaseHTTPRequestHandler):
                                 item["Location"] = {
                                     "Lat": loc.get("lat"),
                                     "Long": loc.get("lon"),
-                                    "Heading": loc.get("headingDegrees"),
+                                    "Heading": loc.get("headingDegrees"), # Sending degrees for rotation
                                     "Speed": loc.get("speed")
                                 }
                             else:
-                                # Fallback for no location
                                 r_name, r_color = process_route_name(None, meta["bus_id"])
                                 item["Route"] = r_name
-                                item["Color"] = r_color
+                                item["Color"] = r_color if r_color else "#888"
 
                             response_data["entries"].append(item)
                             
@@ -412,8 +414,6 @@ class CyRideHandler(BaseHTTPRequestHandler):
         elif path == '/audio':
             if 'path' in query:
                 file_path = query['path'][0]
-                # Simple security check to ensure it's within base dir
-                # (In production you might want stricter checks)
                 if os.path.exists(file_path):
                     try:
                         file_size = os.path.getsize(file_path)
