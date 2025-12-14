@@ -1,0 +1,56 @@
+name: Deploy Audio Transcriber
+
+on:
+  push:
+    paths:
+      - 'scripts/transcription_worker.py'
+      - 'requirements.txt'
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+
+    - name: Install System Dependencies
+      run: |
+        # Whisper and Pydub require ffmpeg
+        sudo apt-get update
+        sudo apt-get install -y ffmpeg
+
+    - name: Install Python Dependencies
+      run: |
+        /usr/bin/python3 -m pip install --upgrade pip
+        # Installing requirements.txt which now includes torch/whisper
+        /usr/bin/python3 -m pip install -r requirements.txt
+
+    - name: Deploy Transcriber Service
+      run: |
+        SCRIPT_PATH=$(pwd)/scripts/transcription_worker.py
+        USER_NAME=$(whoami)
+        
+        cat <<EOF > cyride-transcriber.service
+        [Unit]
+        Description=CyRide Whisper Transcriber
+        After=network.target
+
+        [Service]
+        Type=simple
+        User=$USER_NAME
+        ExecStart=/usr/bin/python3 -u $SCRIPT_PATH
+        Restart=always
+        RestartSec=10
+        Environment=CYRIDE_BASE_DIR=/home/sdr/CYRIDE
+        # Logs to journal
+        StandardOutput=journal
+        StandardError=journal
+
+        [Install]
+        WantedBy=multi-user.target
+        EOF
+
+        sudo cp cyride-transcriber.service /etc/systemd/system/cyride-transcriber.service
+        sudo systemctl daemon-reload
+        sudo systemctl enable cyride-transcriber.service
+        sudo systemctl restart cyride-transcriber.service
