@@ -42,7 +42,9 @@ HTML_CONTENT = """<!DOCTYPE html>
         input[type="date"] { padding: 8px; font-size: 1rem; }
         button { padding: 8px 12px; cursor: pointer; }
 
-        .script-line { margin-bottom: 24px; display: flex; align-items: baseline; position: relative; }
+        .script-line { margin-bottom: 24px; display: flex; align-items: baseline; position: relative; animation: fadeIn 0.3s ease-in; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+        
         .meta-col { width: 140px; flex-shrink: 0; font-family: monospace; font-size: 0.8rem; color: var(--text-secondary); text-align: right; padding-right: 20px; border-right: 1px solid var(--border-color); margin-right: 20px; }
         .time { display: block; font-weight: bold; }
         .channel { display: block; font-size: 0.75rem; opacity: 0.8; }
@@ -85,6 +87,8 @@ HTML_CONTENT = """<!DOCTYPE html>
         /* Sticky Audio Player */
         .audio-dock { position: fixed; bottom: 0; left: 0; right: 0; background: white; border-top: 1px solid #ccc; padding: 10px; display: flex; justify-content: center; box-shadow: 0 -2px 10px rgba(0,0,0,0.1); z-index: 10000; }
         #audio-player { width: 100%; max-width: 600px; display: block; }
+
+        .loader { text-align: center; padding: 20px; color: #999; font-style: italic; }
     </style>
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 </head>
@@ -98,7 +102,8 @@ HTML_CONTENT = """<!DOCTYPE html>
             <button onclick="refreshLog()">Refresh</button>
         </div>
     </header>
-    <div id="log-container">Loading...</div>
+    <div id="log-container"></div>
+    <div id="loading-indicator" class="loader" style="display:none;">Loading more...</div>
 </div>
 
 <div class="audio-dock">
@@ -106,49 +111,39 @@ HTML_CONTENT = """<!DOCTYPE html>
 </div>
 
 <script>
-    // Fallback Location provided by user
     const FALLBACK_LOC = { lat: 42.027726571599906, lng: -93.63560572572788 };
-
-    // -- Date Setup --
     const tzOffset = new Date().getTimezoneOffset() * 60000; 
     const localISOTime = (new Date(Date.now() - tzOffset)).toISOString().slice(0, -1).split('T')[0];
     document.getElementById('date-picker').value = localISOTime;
     
     document.getElementById('date-picker').addEventListener('change', (e) => loadTranscript(e.target.value));
+    
+    // Globals for pagination
+    let currentOffset = 0;
+    let activeDateStr = localISOTime;
+    let stopLoading = false;
+
     function refreshLog() { loadTranscript(document.getElementById('date-picker').value); }
 
-    // Generates the icon: Arrow if moving/headed, Dot if OOS/Stopped
     function getArrowIcon(color, headingDegrees, isOOS) {
         let useDot = false;
-        
-        // If Out of Service, or heading is invalid/missing, use dot
         if (isOOS || headingDegrees == null || headingDegrees === "" || isNaN(headingDegrees)) {
             useDot = true;
         }
-
         if (useDot) {
              return L.divIcon({
                 html: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><circle cx="12" cy="12" r="7" fill="${color}" stroke="white" stroke-width="2"/></svg>`,
-                className: 'bus-marker-icon', 
-                iconSize: [24,24], 
-                iconAnchor:[12,12]
+                className: 'bus-marker-icon', iconSize: [24,24], iconAnchor:[12,12]
             });
         }
-        
-        // Arrow rotated by heading degrees
         return L.divIcon({
             html: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="${color}" stroke="white" stroke-width="2" style="transform: rotate(${headingDegrees}deg); transform-origin: center;"><polygon points="12 2 2 22 12 18 22 22 12 2"></polygon></svg>`,
-            className: 'bus-marker-icon', 
-            iconSize: [24,24], 
-            iconAnchor:[12,12]
+            className: 'bus-marker-icon', iconSize: [24,24], iconAnchor:[12,12]
         });
     }
 
-    // Map Initialization
     window.initMap = function(element, lat, lng, heading, color, isOOS) {
         if (!element || !lat || !lng) return;
-        const mapId = element.id;
-
         if (element._leaflet_map) {
             const map = element._leaflet_map;
             map.invalidateSize();
@@ -156,21 +151,14 @@ HTML_CONTENT = """<!DOCTYPE html>
             setTimeout(() => map.invalidateSize(), 200);
             return;
         }
-
         setTimeout(() => {
             if (element._leaflet_map) return;
-
-            const map = L.map(element, {
+            const map = L.map(element.id, {
                 zoomControl: false, attributionControl: false, dragging: false,
                 scrollWheelZoom: false, doubleClickZoom: false, boxZoom: false
             }).setView([lat, lng], 17);
-
-            L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                maxZoom: 19, attribution: ''
-            }).addTo(map);
-
+            L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
             L.marker([lat, lng], {icon: getArrowIcon(color, heading, isOOS)}).addTo(map);
-            
             element._leaflet_map = map;
             map.invalidateSize();
             setTimeout(() => map.invalidateSize(), 250); 
@@ -178,69 +166,102 @@ HTML_CONTENT = """<!DOCTYPE html>
     }
 
     async function loadTranscript(dateStr) {
-        const container = document.getElementById('log-container');
-        container.innerHTML = '<div style="text-align:center;color:#999">Loading data...</div>';
+        // Reset State
+        activeDateStr = dateStr;
+        currentOffset = 0;
+        stopLoading = true; // Signal previous chain to stop
         
+        const container = document.getElementById('log-container');
+        container.innerHTML = '';
+        document.getElementById('loading-indicator').style.display = 'block';
+        
+        // Slight delay to allow flags to propagate
+        await new Promise(r => setTimeout(r, 50));
+        stopLoading = false;
+        
+        fetchNextBatch();
+    }
+
+    async function fetchNextBatch() {
+        if (stopLoading) return;
+        
+        const indicator = document.getElementById('loading-indicator');
         try {
-            const res = await fetch(`/api/data?date=${dateStr}`);
-            if(!res.ok) throw new Error("No log found");
-            
+            // Fetch 10 items starting at currentOffset
+            const res = await fetch(`/api/data?date=${activeDateStr}&offset=${currentOffset}&limit=10`);
+            if(!res.ok) throw new Error("API Error");
             const data = await res.json();
             
-            if (data.entries.length === 0) {
-                container.innerHTML = `<div style="text-align:center;color:#999">No recordings found for ${dateStr}</div>`;
+            // Abort if user switched dates while fetching
+            if (stopLoading) return;
+
+            if (data.entries.length === 0 && currentOffset === 0) {
+                document.getElementById('log-container').innerHTML = `<div class="loader">No recordings found for ${activeDateStr}</div>`;
+                indicator.style.display = 'none';
                 return;
             }
 
-            container.innerHTML = '';
+            renderEntries(data.entries);
             
-            data.entries.forEach((entry, index) => {
-                const row = document.createElement('div');
-                row.className = 'script-line';
-                const loc = entry.Location || {};
-                const hasLoc = loc.Lat && loc.Long;
-                
-                const uniqueMapId = `map-${index}`;
-                const color = entry.Color || '#333';
-                const isOOS = (entry.Route === "Out Of Service" || entry.Route === "DISPATCH");
-                
-                const headingVal = hasLoc ? (loc.Heading !== undefined ? loc.Heading : null) : null;
-                const mapLat = hasLoc ? loc.Lat : FALLBACK_LOC.lat;
-                const mapLng = hasLoc ? loc.Long : FALLBACK_LOC.lng;
-                const mapColor = hasLoc ? color : '#888';
-
-                const tooltipHTML = `
-                    <div class="tooltip">
-                        <div class="tooltip-header">
-                            <span>${entry.Route}</span>
-                            <span>${loc.Speed ? Math.round(loc.Speed) + ' mph' : '0 mph'}</span>
-                        </div>
-                        <div id="${uniqueMapId}" class="tooltip-map"></div>
-                        <div class="tooltip-footer">
-                            ${hasLoc ? `Lat: ${loc.Lat.toFixed(4)}, Lng: ${loc.Long.toFixed(4)}` : "Position Unavailable"}
-                        </div>
-                    </div>`;
-                
-                const audioPath = `/audio?path=${encodeURIComponent(entry.AudioPath)}`;
-                
-                row.innerHTML = `
-                    <div class="meta-col">
-                        <span class="time">${entry.FormattedTime}</span>
-                        <span class="channel">${entry.Channel}</span>
-                    </div>
-                    <div class="dialogue-col">
-                        <div class="unit-id" style="color:${color}" 
-                             onmouseenter="window.initMap(this.querySelector('.tooltip-map'), ${mapLat}, ${mapLng}, ${headingVal}, '${mapColor}', ${isOOS})">
-                            [${entry.BusID}]
-                            ${tooltipHTML}
-                        </div>
-                        <div class="speech" style="color:${color}" onclick="playAudio('${audioPath}', this)">${entry.Text}</div>
-                    </div>`;
-                container.appendChild(row);
-            });
-        } catch(e) { 
-            container.innerHTML = `<div style="text-align:center; padding:40px; color:#999">${e.message}</div>`; 
+            if (data.has_more) {
+                currentOffset += 10;
+                // Automatically fetch next batch
+                fetchNextBatch(); 
+            } else {
+                indicator.style.display = 'none';
+            }
+        } catch(e) {
+            console.error(e);
+            indicator.innerText = "Error loading data.";
         }
+    }
+
+    function renderEntries(entries) {
+        const container = document.getElementById('log-container');
+        entries.forEach((entry, index) => {
+            const row = document.createElement('div');
+            row.className = 'script-line';
+            const loc = entry.Location || {};
+            const hasLoc = loc.Lat && loc.Long;
+            
+            const uniqueMapId = `map-${currentOffset + index}`;
+            const color = entry.Color || '#333';
+            const isOOS = (entry.Route === "Out Of Service" || entry.Route === "DISPATCH");
+            
+            const headingVal = hasLoc ? (loc.Heading !== undefined ? loc.Heading : null) : null;
+            const mapLat = hasLoc ? loc.Lat : FALLBACK_LOC.lat;
+            const mapLng = hasLoc ? loc.Long : FALLBACK_LOC.lng;
+            const mapColor = hasLoc ? color : '#888';
+
+            const tooltipHTML = `
+                <div class="tooltip">
+                    <div class="tooltip-header">
+                        <span>${entry.Route}</span>
+                        <span>${loc.Speed ? Math.round(loc.Speed) + ' mph' : '0 mph'}</span>
+                    </div>
+                    <div id="${uniqueMapId}" class="tooltip-map"></div>
+                    <div class="tooltip-footer">
+                        ${hasLoc ? `Lat: ${loc.Lat.toFixed(4)}, Lng: ${loc.Long.toFixed(4)}` : "Position Unavailable"}
+                    </div>
+                </div>`;
+            
+            const audioPath = `/audio?path=${encodeURIComponent(entry.AudioPath)}`;
+            
+            row.innerHTML = `
+                <div class="meta-col">
+                    <span class="time">${entry.FormattedTime}</span>
+                    <span class="channel">${entry.Channel}</span>
+                </div>
+                <div class="dialogue-col">
+                    <div class="unit-id" style="color:${color}" 
+                         onmouseenter="window.initMap(this.querySelector('.tooltip-map'), ${mapLat}, ${mapLng}, ${headingVal}, '${mapColor}', ${isOOS})">
+                        [${entry.BusID}]
+                        ${tooltipHTML}
+                    </div>
+                    <div class="speech" style="color:${color}" onclick="playAudio('${audioPath}', this)">${entry.Text}</div>
+                </div>`;
+            container.appendChild(row);
+        });
     }
 
     function playAudio(path, el) {
@@ -251,6 +272,7 @@ HTML_CONTENT = """<!DOCTYPE html>
         player.play();
     }
 
+    // Initial Load
     loadTranscript(localISOTime);
 </script>
 </body>
@@ -263,10 +285,6 @@ def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
 
 def parse_filename_metadata(path):
-    """
-    Extracts time and bus ID from filename like: 14_30_05-1234.mp3
-    Returns: { "h": 14, "m": 30, "s": 5, "bus_id": "1234" }
-    """
     basename = os.path.basename(path)
     match = re.search(r'(\d{2})[_-](\d{2})[_-](\d{2})-(.+)\.mp3', basename)
     if match:
@@ -279,7 +297,6 @@ def parse_filename_metadata(path):
     return None
 
 def format_time_12hr(h, m, s):
-    """Converts 24h to 12h AM/PM string"""
     period = "AM"
     if h >= 12:
         period = "PM"
@@ -303,6 +320,7 @@ def find_closest_location(date_obj, target_seconds, bus_id):
     if not os.path.exists(day_loc_dir):
         return None
 
+    # Search window: Target ± 5 seconds
     search_offsets = [0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5]
 
     for offset in search_offsets:
@@ -322,7 +340,6 @@ def find_closest_location(date_obj, target_seconds, bus_id):
                     data = json.load(f)
                     vehicles = data.get("Vehicles", [])
                     for v in vehicles:
-                        # Convert both to string to ensure matching numbers vs strings
                         if str(v.get("name")) == str(bus_id):
                             return v
             except:
@@ -344,17 +361,26 @@ class CyRideHandler(BaseHTTPRequestHandler):
         path = parsed_path.path
         query = urllib.parse.parse_qs(parsed_path.query)
 
-        # 1. API: GET DATA
+        # 1. API: GET DATA (Paginated)
         if path == '/api/data':
             self.send_response(200)
             self.send_header('Content-type', 'application/json')
             self.send_header('Access-Control-Allow-Origin', '*')
             self.end_headers()
             
-            response_data = {"status": {"mounted": os.path.exists(MOUNT_DIR)}, "entries": []}
+            response_data = {"status": {"mounted": os.path.exists(MOUNT_DIR)}, "entries": [], "has_more": False}
             
             if 'date' in query:
                 date_str = query['date'][0]
+                # Default to offset 0, limit 10
+                try:
+                    offset = int(query.get('offset', [0])[0])
+                except: offset = 0
+                
+                try:
+                    limit = int(query.get('limit', [10])[0])
+                except: limit = 10
+                
                 try:
                     dt = datetime.strptime(date_str, '%Y-%m-%d')
                     transcript_path = os.path.join(
@@ -368,7 +394,16 @@ class CyRideHandler(BaseHTTPRequestHandler):
                         with open(transcript_path, 'r') as f:
                             transcripts = json.load(f)
                         
-                        for t in transcripts:
+                        # 1. Reverse Order (Newest First)
+                        transcripts.reverse()
+                        
+                        # 2. Slice for Pagination
+                        total_items = len(transcripts)
+                        chunk = transcripts[offset : offset + limit]
+                        response_data["has_more"] = (offset + limit) < total_items
+                        
+                        # 3. Process ONLY this chunk (Heavy Logic)
+                        for t in chunk:
                             file_path = t.get("Path", "")
                             meta = parse_filename_metadata(file_path)
                             
@@ -385,6 +420,7 @@ class CyRideHandler(BaseHTTPRequestHandler):
                                 "Location": {}
                             }
                             
+                            # Expensive Location Lookup happens ONLY for these 10 items
                             loc = find_closest_location(dt, meta["seconds_of_day"], meta["bus_id"])
                             
                             if loc:
@@ -394,7 +430,7 @@ class CyRideHandler(BaseHTTPRequestHandler):
                                 item["Location"] = {
                                     "Lat": loc.get("lat"),
                                     "Long": loc.get("lon"),
-                                    "Heading": loc.get("headingDegrees"), # Sending degrees for rotation
+                                    "Heading": loc.get("headingDegrees"),
                                     "Speed": loc.get("speed")
                                 }
                             else:
