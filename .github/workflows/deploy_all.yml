@@ -35,8 +35,8 @@ jobs:
         mkdir -p "$BASE_DATA_DIR"
 
         echo "Fixing permissions for $USER_NAME..."
-        sudo chown -R $USER_NAME:$USER_NAME "$BASE_DATA_DIR"
-        sudo chown -R $USER_NAME:$USER_NAME "$APP_DIR"
+        # sudo chown -R $USER_NAME:$USER_NAME "$BASE_DATA_DIR"
+        # sudo chown -R $USER_NAME:$USER_NAME "$APP_DIR"
 
     - name: 4. Create and Register Services
       run: |
