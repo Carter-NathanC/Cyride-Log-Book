@@ -13,8 +13,14 @@ BASE_DIR = os.getenv("CYRIDE_BASE_DIR", os.path.abspath("CYRIDE_DATA"))
 TRANSCRIPT_DIR = os.path.join(BASE_DIR, "Transcriptions")
 LOCATION_DIR = os.path.join(BASE_DIR, "Location")
 MOUNT_DIR = os.path.join(BASE_DIR, "SDR Recordings")
-STATE_DIR = os.path.join(BASE_DIR, "states") # Ensure we know where states are
+STATE_DIR = os.path.join(BASE_DIR, "states")
 PORT = 8000
+
+# --- CACHE ---
+# Stores file contents to avoid re-reading disk for the same second
+# Key: "YYYY/MM/DD/HH-MM-SS.json", Value: parsed JSON object
+# This is much lighter than loading the whole hour.
+FILE_CACHE = {}
 
 # --- HTML CONTENT ---
 HTML_CONTENT = """<!DOCTYPE html>
@@ -177,7 +183,6 @@ HTML_CONTENT = """<!DOCTYPE html>
 
     function switchTab(tabName) {
         currentView = tabName;
-        // Toggle UI
         document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
         document.querySelectorAll('.view-section').forEach(v => v.classList.remove('active'));
         
@@ -206,7 +211,6 @@ HTML_CONTENT = """<!DOCTYPE html>
     async function loadWorkerStatus(dateStr) {
         const container = document.getElementById('worker-container');
         container.innerHTML = '<div class="loader">Loading status...</div>';
-        
         try {
             const res = await fetch(`/api/status?date=${dateStr}`);
             if (!res.ok) throw new Error("Status not found");
@@ -216,18 +220,15 @@ HTML_CONTENT = """<!DOCTYPE html>
                 container.innerHTML = '<div class="loader">No worker history for this date.</div>';
                 return;
             }
-
             container.innerHTML = '';
             
-            // Sort keys (filenames)
             const files = Object.keys(data).sort();
-            // Optional: reverse to show newest added first
             files.reverse();
 
             files.forEach(f => {
                 const info = data[f];
                 const status = info.status || 'unknown';
-                const filename = f.split('/').pop(); // Show just filename
+                const filename = f.split('/').pop();
                 
                 let badgeClass = 'st-unknown';
                 if (status === 'processed') badgeClass = 'st-processed';
@@ -243,7 +244,6 @@ HTML_CONTENT = """<!DOCTYPE html>
                 `;
                 container.appendChild(div);
             });
-
         } catch (e) {
             container.innerHTML = `<div class="loader">Error: ${e.message}</div>`;
         }
@@ -391,7 +391,6 @@ HTML_CONTENT = """<!DOCTYPE html>
         player.play();
     }
 
-    // Initial Load (Default to Logs tab)
     loadTranscript(localISOTime);
 </script>
 </body>
@@ -451,18 +450,27 @@ def find_closest_location(date_obj, target_seconds, bus_id):
         s = check_sec % 60
         
         filename = f"{h:02d}-{m:02d}-{s:02d}.json"
-        filepath = os.path.join(day_loc_dir, filename)
         
-        if os.path.exists(filepath):
-            try:
-                with open(filepath, 'r') as f:
-                    data = json.load(f)
-                    vehicles = data.get("Vehicles", [])
-                    for v in vehicles:
-                        if str(v.get("name")) == str(bus_id):
-                            return v
-            except:
-                continue
+        # KEY OPTIMIZATION: Only check specific files, do not scan dir
+        full_path = os.path.join(day_loc_dir, filename)
+        
+        if os.path.exists(full_path):
+            # CACHE CHECK
+            if full_path in FILE_CACHE:
+                data = FILE_CACHE[full_path]
+            else:
+                try:
+                    with open(full_path, 'r') as f:
+                        data = json.load(f)
+                        FILE_CACHE[full_path] = data # Add to cache
+                except:
+                    continue
+            
+            # Lookup
+            vehicles = data.get("Vehicles", [])
+            for v in vehicles:
+                if str(v.get("name")) == str(bus_id):
+                    return v
     return None
 
 def process_route_name(route_name, bus_id):
@@ -480,7 +488,7 @@ class CyRideHandler(BaseHTTPRequestHandler):
         path = parsed_path.path
         query = urllib.parse.parse_qs(parsed_path.query)
 
-        # 1. API: GET TRANSCRIPT DATA
+        # 1. API: GET DATA (Paginated)
         if path == '/api/data':
             self.send_response(200)
             self.send_header('Content-type', 'application/json')
@@ -511,17 +519,12 @@ class CyRideHandler(BaseHTTPRequestHandler):
                         with open(transcript_path, 'r') as f:
                             transcripts = json.load(f)
                         
-                        # --- ENFORCE TIMESTAMP SORTING ---
-                        # Extract timestamps for sorting
                         def get_timestamp(entry):
                             meta = parse_filename_metadata(entry.get("Path", ""))
                             return meta["seconds_of_day"] if meta else -1
                         
-                        # Sort based on parsed filename time
                         transcripts.sort(key=get_timestamp)
-                        
-                        if sort_order == 'desc':
-                            transcripts.reverse()
+                        if sort_order == 'desc': transcripts.reverse()
                         
                         total_items = len(transcripts)
                         chunk = transcripts[offset : offset + limit]
@@ -565,34 +568,26 @@ class CyRideHandler(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps(response_data).encode('utf-8'))
             return
 
-        # 2. API: GET WORKER STATUS (NEW)
+        # 2. API: STATUS
         elif path == '/api/status':
             self.send_response(200)
             self.send_header('Content-type', 'application/json')
             self.end_headers()
-            
             status_data = {}
             if 'date' in query:
                 date_str = query.get('date', [None])[0]
                 try:
                     dt = datetime.strptime(date_str, '%Y-%m-%d')
-                    # State files are stored as YYYY/MM/DD.json
                     state_file_path = os.path.join(
-                        STATE_DIR,
-                        dt.strftime('%Y'),
-                        dt.strftime('%m'),
-                        f"{dt.strftime('%d')}.json"
+                        STATE_DIR, dt.strftime('%Y'), dt.strftime('%m'), f"{dt.strftime('%d')}.json"
                     )
-                    
                     if os.path.exists(state_file_path):
-                        with open(state_file_path, 'r') as f:
-                            status_data = json.load(f)
-                except Exception as e: log(f"Status API Error: {e}")
-            
+                        with open(state_file_path, 'r') as f: status_data = json.load(f)
+                except Exception: pass
             self.wfile.write(json.dumps(status_data).encode('utf-8'))
             return
 
-        # 3. API: AUDIO STREAMING
+        # 3. AUDIO
         elif path == '/audio':
             if 'path' in query:
                 file_path = query['path'][0]
@@ -604,15 +599,14 @@ class CyRideHandler(BaseHTTPRequestHandler):
                         self.send_header('Content-Length', str(file_size))
                         self.send_header('Access-Control-Allow-Origin', '*')
                         self.end_headers()
-                        with open(file_path, 'rb') as f:
-                            shutil.copyfileobj(f, self.wfile)
+                        with open(file_path, 'rb') as f: shutil.copyfileobj(f, self.wfile)
                         return
                     except Exception as e: log(f"Audio Serve Error: {e}")
             self.send_response(404)
             self.end_headers()
             return
 
-        # 4. UI: SERVE HTML
+        # 4. HTML
         else:
             self.send_response(200)
             self.send_header('Content-type', 'text/html')
