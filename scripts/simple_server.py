@@ -13,8 +13,9 @@ TRANSCRIPT_DIR = os.path.join(BASE_DIR, "Transcriptions")
 LOCATION_DIR = os.path.join(BASE_DIR, "Location")
 MOUNT_DIR = os.path.join(BASE_DIR, "SDR Recordings")
 
-PREFERRED_PORT = 80
-FALLBACK_PORT = 8000
+# FORCE PORT 8000
+# This avoids all "Permission Denied" errors associated with Port 80
+PORT = 8000
 
 # --- HTML CONTENT ---
 HTML_CONTENT = """<!DOCTYPE html>
@@ -160,7 +161,7 @@ class CyRideHandler(BaseHTTPRequestHandler):
         if path == '/api/data':
             self.send_response(200)
             self.send_header('Content-type', 'application/json')
-            self.send_header('Access-Control-Allow-Origin', '*') # Allow all connections
+            self.send_header('Access-Control-Allow-Origin', '*') 
             self.end_headers()
             is_mounted = os.path.exists(MOUNT_DIR)
             response_data = {"status": {"mounted": is_mounted, "path": MOUNT_DIR}, "entries": []}
@@ -213,25 +214,15 @@ def main():
     log("--- CyRide Simple Server Starting ---")
     log(f"Data Directory: {BASE_DIR}")
     
-    # Try Port 80
+    # STRICTLY PORT 8000
     try:
-        server_address = ('0.0.0.0', PREFERRED_PORT)
+        server_address = ('0.0.0.0', PORT)
         httpd = ThreadingHTTPServer(server_address, CyRideHandler)
-        log(f"SUCCESS: Serving on Port {PREFERRED_PORT}")
+        log(f"SUCCESS: Serving on Port {PORT}")
         httpd.serve_forever()
     except Exception as e:
-        log(f"WARNING: Could not bind to Port {PREFERRED_PORT} ({e}).")
-        log(f"Attempting fallback to Port {FALLBACK_PORT}...")
-        
-        # Try Port 8000
-        try:
-            server_address = ('0.0.0.0', FALLBACK_PORT)
-            httpd = ThreadingHTTPServer(server_address, CyRideHandler)
-            log(f"SUCCESS: Serving on Port {FALLBACK_PORT}")
-            httpd.serve_forever()
-        except Exception as e2:
-            log(f"CRITICAL ERROR: Could not bind to Port {FALLBACK_PORT} either: {e2}")
-            sys.exit(1)
+        log(f"CRITICAL ERROR: Could not bind to Port {PORT}: {e}")
+        sys.exit(1)
 
 if __name__ == '__main__':
     main()
