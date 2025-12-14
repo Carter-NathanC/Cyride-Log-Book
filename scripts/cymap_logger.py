@@ -82,7 +82,6 @@ def fetch_all_vehicle_data():
         for vehicle in vehicles_by_id.values():
             if vehicle.get('lastUpdated'):
                 try:
-                    # Clean ISO format if needed (sometimes 'Z' causes issues in older pythons)
                     clean_ts = vehicle['lastUpdated'].replace('Z', '+00:00')
                     last_updated_ts = datetime.fromisoformat(clean_ts).timestamp()
                     
@@ -98,8 +97,12 @@ def fetch_all_vehicle_data():
 
 def save_periodic_data():
     vehicles = fetch_all_vehicle_data()
+    # If API fails (None), do not write anything
     if vehicles is None: return
 
+    # Even if list is empty (0 vehicles active), we still write the empty list 
+    # to show that the system is running but no buses are out.
+    
     now = datetime.now()
     output_data = {
         "Vehicles": []
