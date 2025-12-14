@@ -23,22 +23,19 @@ jobs:
         echo "Installing Python libraries..."
         sudo /usr/bin/python3 -m pip install -r requirements.txt
 
-    - name: 3. Setup Directories & FIX PERMISSIONS
+    - name: 3. Setup Directories (Base Only)
       run: |
         USER_NAME=$(whoami)
         BASE_DATA_DIR="/home/$USER_NAME/CYRIDE"
         APP_DIR=$(pwd)
         
-        echo "Ensuring data directories exist at $BASE_DATA_DIR..."
-        mkdir -p "$BASE_DATA_DIR/SDR Recordings"
-        mkdir -p "$BASE_DATA_DIR/Transcriptions"
-        mkdir -p "$BASE_DATA_DIR/Location"
-        mkdir -p "$BASE_DATA_DIR/states"
+        # We only create the Base folder. 
+        # WE DO NOT create subfolders (states, Location, etc) because that blocks the Google Drive mount.
+        echo "Ensuring base directory exists at $BASE_DATA_DIR..."
+        mkdir -p "$BASE_DATA_DIR"
 
-        echo "CRITICAL: Fixing permissions for $USER_NAME..."
-        # Fix Data Dir ownership
+        echo "Fixing permissions for $USER_NAME..."
         sudo chown -R $USER_NAME:$USER_NAME "$BASE_DATA_DIR"
-        # Fix Repo/Script ownership (ignores __pycache__ root issues)
         sudo chown -R $USER_NAME:$USER_NAME "$APP_DIR"
 
     - name: 4. Create and Register Services
@@ -55,7 +52,6 @@ jobs:
             DESC=$3
             CAPS=$4
             
-            # Use 'After=network-online.target' to ensure IP is ready on boot
             cat <<EOF > $SERVICE_NAME.service
         [Unit]
         Description=$DESC
@@ -82,27 +78,17 @@ jobs:
             sudo systemctl enable $SERVICE_NAME.service
         }
 
-        # 1. Web Server
         generate_service "cyride-web" "scripts/simple_server.py" "CyRide Web Interface" "AmbientCapabilities=CAP_NET_BIND_SERVICE"
-        
-        # 2. Queue Manager
         generate_service "cyride-manager" "scripts/queue_manager.py" "CyRide Queue Manager" ""
-        
-        # 3. Transcriber
         generate_service "cyride-transcriber" "scripts/transcription_worker.py" "CyRide Transcriber" ""
-        
-        # 4. Logger
         generate_service "cyride-logger" "scripts/cymap_logger.py" "CyRide Location Logger" ""
 
     - name: 5. Restart All Services
       run: |
         echo "Reloading Systemd..."
         sudo systemctl daemon-reload
-        
-        echo "Restarting Services..."
         sudo systemctl restart cyride-web
         sudo systemctl restart cyride-manager
         sudo systemctl restart cyride-transcriber
         sudo systemctl restart cyride-logger
-        
         echo "DEPLOYMENT COMPLETE."
