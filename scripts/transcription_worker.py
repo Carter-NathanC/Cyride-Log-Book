@@ -13,6 +13,7 @@ from pydub import AudioSegment
 BASE_DIR = os.getenv("CYRIDE_BASE_DIR", "/home/sdr/CYRIDE")
 STATE_DIR = os.path.join(BASE_DIR, "states")
 TRANSCRIPT_DIR = os.path.join(BASE_DIR, "Transcriptions")
+MOUNT_DIR = os.path.join(BASE_DIR, "SDR Recordings")
 
 # Audio Config
 SAMPLE_RATE = 16000 
@@ -20,6 +21,14 @@ WHISPER_MODEL_SIZE = "medium.en"
 
 def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
+
+def wait_for_drive():
+    """Pauses execution until the Google Drive mount (or specific folder) is detected."""
+    # Transcriber specifically needs the recording folder
+    while not os.path.exists(MOUNT_DIR):
+        log(f"Waiting for GDrive mount at: {MOUNT_DIR}...")
+        time.sleep(10)
+    log("GDrive mount detected. Proceeding.")
 
 class AudioCleaner:
     @staticmethod
@@ -154,6 +163,10 @@ def scan_and_process(model):
 
 def main():
     log("--- CyRide Transcriber Starting ---")
+    log(f"Base Directory: {BASE_DIR}")
+
+    # 1. Wait for Drive before anything else
+    wait_for_drive()
     
     # Ensure directories exist
     os.makedirs(TRANSCRIPT_DIR, exist_ok=True)
