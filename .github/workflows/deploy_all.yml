@@ -21,23 +21,19 @@ jobs:
     - name: 2. Install Python Requirements
       run: |
         echo "Installing Python libraries..."
-        # Running with sudo to ensure they are available system-wide for the services
         sudo /usr/bin/python3 -m pip install -r requirements.txt
 
-    - name: 3. Setup Directories
+    - name: 3. Setup Directories (Quick)
       run: |
-        # Define where data lives (Home folder of the runner user)
         USER_NAME=$(whoami)
         BASE_DATA_DIR="/home/$USER_NAME/CYRIDE"
         
-        echo "Setting up data directories at $BASE_DATA_DIR..."
+        echo "Ensuring data directories exist at $BASE_DATA_DIR..."
+        # Just make sure folders exist. DO NOT run chown -R on data files (too slow).
         mkdir -p "$BASE_DATA_DIR/SDR Recordings"
         mkdir -p "$BASE_DATA_DIR/Transcriptions"
         mkdir -p "$BASE_DATA_DIR/Location"
         mkdir -p "$BASE_DATA_DIR/states"
-        
-        # Ensure the runner user owns them
-        sudo chown -R $USER_NAME:$USER_NAME "$BASE_DATA_DIR"
 
     - name: 4. Create and Register Services
       run: |
@@ -47,14 +43,12 @@ jobs:
         
         echo "Generating Service Files for User: $USER_NAME"
 
-        # --- FUNCTION TO GENERATE SERVICE FILE ---
         generate_service() {
             SERVICE_NAME=$1
             SCRIPT_FILE=$2
             DESC=$3
             CAPS=$4
             
-            echo "Creating $SERVICE_NAME..."
             cat <<EOF > $SERVICE_NAME.service
         [Unit]
         Description=$DESC
@@ -76,14 +70,11 @@ jobs:
         WantedBy=multi-user.target
         EOF
             
-            # Move to system folder and enable
             sudo mv $SERVICE_NAME.service /etc/systemd/system/
             sudo systemctl enable $SERVICE_NAME.service
         }
 
-        # --- GENERATE SERVICES ---
-        
-        # 1. Web Server (Needs port 80 binding capability)
+        # 1. Web Server (Needs CAP_NET_BIND_SERVICE to use Port 80 without root)
         generate_service "cyride-web" "scripts/simple_server.py" "CyRide Web Interface" "AmbientCapabilities=CAP_NET_BIND_SERVICE"
         
         # 2. Queue Manager
@@ -101,10 +92,10 @@ jobs:
         sudo systemctl daemon-reload
         
         echo "Restarting Services..."
+        # We restart specifically to pick up new code
         sudo systemctl restart cyride-web
         sudo systemctl restart cyride-manager
         sudo systemctl restart cyride-transcriber
         sudo systemctl restart cyride-logger
         
         echo "DEPLOYMENT COMPLETE."
-        echo "Check status: sudo systemctl status cyride-web"
