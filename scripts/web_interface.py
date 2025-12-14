@@ -2,9 +2,9 @@ import os
 import sys
 import json
 import time
-import glob
 import re
-from datetime import datetime, timedelta
+import threading
+from datetime import datetime
 from flask import Flask, render_template_string, request, send_file, jsonify, abort
 
 # --- CONFIGURATION ---
@@ -16,21 +16,16 @@ MOUNT_DIR = os.path.join(BASE_DIR, "SDR Recordings")
 app = Flask(__name__)
 
 # --- HELPERS ---
-
 def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
 
-def wait_for_drive():
-    """Pauses execution until the Google Drive mount is detected."""
-    while not os.path.exists(MOUNT_DIR):
-        log(f"Waiting for GDrive mount at: {MOUNT_DIR}...")
-        time.sleep(10)
-    log("GDrive mount detected. Starting Web Server.")
+def is_drive_mounted():
+    return os.path.exists(MOUNT_DIR)
 
 def parse_filename_metadata(path):
     """
     Extracts time and Bus ID from filename.
-    Format expected: hh_mm_ss-BusID.mp3 OR hh-mm-ss-BusID.mp3
+    Matches: 14_30_05-1234.mp3 or 14-30-05-1234.mp3
     """
     basename = os.path.basename(path)
     match = re.search(r'(\d{2})[_-](\d{2})[_-](\d{2})-(\d+)\.mp3', basename)
@@ -44,9 +39,7 @@ def parse_filename_metadata(path):
     return None
 
 def find_closest_location(date_obj, target_seconds, bus_id):
-    """
-    Finds the location data for a specific bus at a specific time (±10s).
-    """
+    """Finds location data within ±10 seconds."""
     day_loc_dir = os.path.join(
         LOCATION_DIR, 
         date_obj.strftime('%Y'), 
@@ -57,10 +50,7 @@ def find_closest_location(date_obj, target_seconds, bus_id):
     if not os.path.exists(day_loc_dir):
         return None
 
-    best_match = None
-    found_vehicle_data = None
-    
-    # Check offsets: 0s, +1s, -1s ... up to ±10s
+    # Search offsets: 0, +1, -1, ... ±10
     search_offsets = [0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6, 7, -7, 8, -8, 9, -9, 10, -10]
 
     for offset in search_offsets:
@@ -78,27 +68,28 @@ def find_closest_location(date_obj, target_seconds, bus_id):
             try:
                 with open(filepath, 'r') as f:
                     data = json.load(f)
-                    vehicles = data.get("Vehicles", [])
-                    for v in vehicles:
+                    for v in data.get("Vehicles", []):
                         if v.get("name") == bus_id:
-                            found_vehicle_data = v
-                            break
+                            return v
             except:
                 continue
-        
-        if found_vehicle_data:
-            break
-            
-    return found_vehicle_data
+    return None
 
 # --- ROUTES ---
 
 @app.route('/')
 def index():
-    return render_template_string(HTML_TEMPLATE)
+    return render_template_string(HTML_TEMPLATE, drive_ready=is_drive_mounted())
+
+@app.route('/api/status')
+def status():
+    return jsonify({"drive_mounted": is_drive_mounted()})
 
 @app.route('/api/data')
 def get_data():
+    if not is_drive_mounted():
+        return jsonify({"error": "Drive not mounted"}), 503
+
     date_str = request.args.get('date')
     if not date_str:
         return jsonify([])
@@ -123,15 +114,18 @@ def get_data():
         with open(transcript_path, 'r') as f:
             transcripts = json.load(f)
             
+        # Process most recent first if desired, or keep chronological
+        # transcripts.sort(key=lambda x: x.get("Time")) 
+            
         for t in transcripts:
             path = t.get("Path", "")
             meta = parse_filename_metadata(path)
             
             item = {
-                "Time": t.get("Time"), 
+                "Time": t.get("Time"),
                 "Text": t.get("Text"),
                 "Duration": t.get("Duration"),
-                "AudioPath": f"/audio?path={path}", 
+                "AudioPath": f"/audio?path={path}",
                 "BusID": "Unknown",
                 "Route": "Unknown",
                 "Color": "#333",
@@ -140,17 +134,18 @@ def get_data():
 
             if meta:
                 item["BusID"] = meta["bus_id"]
+                # Use strict time from filename if available
                 item["Time"] = meta["time_str"] 
                 
-                loc_data = find_closest_location(dt, meta["seconds_of_day"], meta["bus_id"])
-                if loc_data:
-                    item["Route"] = loc_data.get("routeName")
-                    item["Color"] = loc_data.get("routeColor")
+                loc = find_closest_location(dt, meta["seconds_of_day"], meta["bus_id"])
+                if loc:
+                    item["Route"] = loc.get("routeName", "Unknown")
+                    item["Color"] = loc.get("routeColor", "#333")
                     item["Location"] = {
-                        "Lat": loc_data.get("lat"),
-                        "Long": loc_data.get("lon"),
-                        "Heading": loc_data.get("headingDegrees"),
-                        "Speed": loc_data.get("speed")
+                        "Lat": loc.get("lat"),
+                        "Long": loc.get("lon"),
+                        "Heading": loc.get("headingDegrees"),
+                        "Speed": loc.get("speed")
                     }
             
             results.append(item)
@@ -167,6 +162,7 @@ def stream_audio():
     if not path: abort(404)
     
     clean_path = os.path.abspath(path)
+    # Security check to ensure we only serve files from our base dir
     if not clean_path.startswith(os.path.abspath(BASE_DIR)):
         abort(403)
         
@@ -175,7 +171,7 @@ def stream_audio():
         
     return send_file(clean_path)
 
-# --- FRONTEND TEMPLATE ---
+# --- TEMPLATE (Based on your Reference) ---
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -183,89 +179,71 @@ HTML_TEMPLATE = """
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>CyRide Dispatch Log</title>
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      crossorigin=""/>
+      
     <style>
         :root {
             --bg-color: #f4f4f9; --paper-color: #ffffff;
             --text-primary: #1a1a1a; --text-secondary: #666;
-            --border-color: #e0e0e0;
+            --border-color: #e0e0e0; --accent: #c8102e;
         }
-        body { font-family: 'Segoe UI', Georgia, serif; background: var(--bg-color); color: var(--text-primary); margin: 0; padding: 20px; }
-        .container { max-width: 1000px; margin: 0 auto; background: var(--paper-color); padding: 40px; box-shadow: 0 4px 10px rgba(0,0,0,0.05); min-height: 90vh; border-radius: 8px; }
+        body { font-family: 'Georgia', serif; background: var(--bg-color); color: var(--text-primary); margin: 0; padding: 20px; }
         
-        header { border-bottom: 2px solid #eee; margin-bottom: 30px; display: flex; justify-content: space-between; align-items: center; padding-bottom: 20px; }
-        h1 { margin: 0; font-size: 1.8rem; color: #c8102e; }
+        .container { max-width: 900px; margin: 0 auto; background: var(--paper-color); padding: 40px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); min-height: 90vh; }
+        header { border-bottom: 2px solid var(--text-primary); margin-bottom: 30px; display: flex; justify-content: space-between; align-items: center; }
+        h1 { margin: 0; font-size: 2rem; }
         
         .controls { display: flex; gap: 10px; }
-        input[type="date"] { padding: 8px; font-size: 1rem; border: 1px solid #ddd; border-radius: 4px; }
-        button { padding: 8px 15px; cursor: pointer; background: #333; color: #fff; border: none; border-radius: 4px; }
-        button:hover { background: #555; }
+        input[type="date"] { padding: 8px; font-size: 1rem; }
+        button { padding: 8px 12px; cursor: pointer; }
 
-        .script-line { 
-            margin-bottom: 15px; 
-            padding: 10px; 
-            display: flex; 
-            align-items: baseline; 
-            border-bottom: 1px solid #f9f9f9;
-            transition: background 0.2s;
-        }
-        .script-line:hover { background: #fcfcfc; }
+        .status-bar { background: #ffeeba; color: #856404; padding: 10px; margin-bottom: 20px; border-radius: 4px; text-align: center; display: none; }
 
-        .meta-col { width: 100px; flex-shrink: 0; font-family: monospace; font-size: 0.9rem; color: var(--text-secondary); text-align: right; padding-right: 20px; border-right: 2px solid #eee; margin-right: 20px; }
-        .time { font-weight: bold; display: block; }
+        .script-line { margin-bottom: 24px; display: flex; align-items: baseline; position: relative; }
+        .meta-col { width: 140px; flex-shrink: 0; font-family: monospace; font-size: 0.8rem; color: var(--text-secondary); text-align: right; padding-right: 20px; border-right: 1px solid var(--border-color); margin-right: 20px; }
+        .time { display: block; font-weight: bold; }
+        .channel { display: block; font-size: 0.75rem; opacity: 0.8; }
         
-        .dialogue-col { flex-grow: 1; }
-
-        .unit-id { 
-            font-weight: 800; 
-            text-transform: uppercase; 
-            font-size: 0.9rem; 
-            cursor: help; 
-            display: inline-block; 
-            margin-bottom: 4px;
-            padding: 2px 6px;
-            border-radius: 4px;
-            background: #eee;
-            position: relative;
-        }
+        .unit-id { font-weight: bold; text-transform: uppercase; font-size: 0.95rem; cursor: help; display: inline-block; border-bottom: 1px dotted #999; position: relative; }
         
-        .speech { 
-            font-size: 1.1rem; 
-            line-height: 1.5;
-            cursor: pointer; 
-            display: block;
-            color: #444;
-        }
-        .speech:hover { color: #000; }
-        .speech.playing { background: #e6ffe6; border-radius: 4px; padding: 0 5px; }
-
+        .speech { font-size: 1.1rem; cursor: pointer; padding: 8px 12px; border-radius: 6px; background: rgba(0,0,0,0.02); display: inline-block; width: 100%; transition: background 0.2s; }
+        .speech:hover { background: rgba(0,0,0,0.05); }
+        .speech.playing { background: #e6ffe6; border-left: 3px solid #00cc00; }
+        
+        /* Map Tooltip */
         .tooltip { 
             visibility: hidden; 
-            width: 250px; 
+            width: 300px; 
             background: #fff; 
+            color: #333; 
             border-radius: 8px; 
             position: absolute; 
             z-index: 9999; 
-            bottom: 130%; 
+            bottom: 125%; 
             left: 50%; 
             transform: translateX(-50%); 
             opacity: 0; 
-            transition: opacity 0.2s, visibility 0.2s; 
-            box-shadow: 0 5px 20px rgba(0,0,0,0.2); 
-            border: 1px solid #ddd; 
-            pointer-events: none; 
+            transition: opacity 0.2s; 
+            font-family: sans-serif; 
+            box-shadow: 0 4px 20px rgba(0,0,0,0.4); 
+            border: 1px solid #ccc; 
+            pointer-events: none; /* Important for hover stability */
+            display: block;
         }
         
-        .unit-id:hover .tooltip { visibility: visible; opacity: 1; pointer-events: auto; }
+        .unit-id:hover .tooltip { visibility: visible; opacity: 1; }
         
-        .tooltip-header { padding: 8px 12px; background: #f8f9fa; border-bottom: 1px solid #eee; font-weight: bold; font-size: 0.8rem; display: flex; justify-content: space-between; border-radius: 8px 8px 0 0; }
-        .tooltip-map { height: 200px; width: 100%; background: #e9ecef; }
-        .tooltip-footer { padding: 8px; background: #fff; font-size: 0.75rem; color: #777; border-top: 1px solid #eee; text-align: center; border-radius: 0 0 8px 8px; }
+        .tooltip-header { padding: 10px; background: #f8f9fa; border-bottom: 1px solid #e9ecef; font-weight: bold; font-size: 0.85rem; display: flex; justify-content: space-between; border-radius: 8px 8px 0 0; }
+        .tooltip-map { height: 250px; width: 100%; background: #e9ecef; display: block; }
+        .tooltip-footer { padding: 8px; background: #fff; font-size: 0.75rem; color: #666; border-top: 1px solid #e9ecef; text-align: center; border-radius: 0 0 8px 8px; }
         
         .bus-marker-icon { background: transparent; border: none; }
         
         audio { display: none; }
-        .loading { text-align: center; color: #999; margin-top: 50px; }
+        .loading { text-align: center; color: #999; padding: 20px; }
     </style>
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 </head>
@@ -276,88 +254,109 @@ HTML_TEMPLATE = """
         <h1>CyRide Dispatch Log</h1>
         <div class="controls">
             <input type="date" id="date-picker">
-            <button onclick="refreshLog()">Load Data</button>
+            <button onclick="refreshLog()">Refresh</button>
         </div>
     </header>
-    <div id="log-container"></div>
+
+    {% if not drive_ready %}
+    <div class="status-bar" style="display:block">
+        <strong>Warning:</strong> Drive not mounted yet. Data may be unavailable.
+    </div>
+    {% endif %}
+
+    <div id="log-container">Loading...</div>
 </div>
 
 <audio id="audio-player" controls></audio>
 
 <script>
+    const AMES_DEFAULT = { lat: 42.0282, lng: -93.6434 };
+
+    // -- Date Setup --
     const tzOffset = new Date().getTimezoneOffset() * 60000; 
-    const localISOTime = (new Date(Date.now() - tzOffset)).toISOString().split('T')[0];
+    const localISOTime = (new Date(Date.now() - tzOffset)).toISOString().slice(0, -1).split('T')[0];
     document.getElementById('date-picker').value = localISOTime;
     
     document.getElementById('date-picker').addEventListener('change', (e) => loadTranscript(e.target.value));
-
-    function refreshLog() { 
-        loadTranscript(document.getElementById('date-picker').value); 
-    }
+    
+    function refreshLog() { loadTranscript(document.getElementById('date-picker').value); }
 
     function getArrowIcon(color, heading) {
         let rotation = 0, isDir = true;
         if(heading==null || heading==="" || heading=="N/A") isDir=false;
+        else if(typeof heading === 'string') isDir=false; 
         else rotation=heading;
         
         let svg = isDir ? 
-            `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="${color}" stroke="white" stroke-width="1.5" style="transform: rotate(${rotation}deg); transform-origin: center;"><polygon points="12 2 2 22 12 18 22 22 12 2"></polygon></svg>` : 
+            `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="${color}" stroke="white" stroke-width="2" style="transform: rotate(${rotation}deg); transform-origin: center;"><polygon points="12 2 2 22 12 18 22 22 12 2"></polygon></svg>` : 
             `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" fill="${color}" stroke="white" stroke-width="2"/></svg>`;
         return L.divIcon({html: svg, className: 'bus-marker-icon', iconSize: [24,24], iconAnchor:[12,12]});
     }
 
+    // Map Initialization
     window.initMap = function(element, lat, lng, heading, color) {
         if (!element || !lat || !lng) return;
         
         if (element._leaflet_map) {
-            setTimeout(() => {
-                element._leaflet_map.invalidateSize();
-                element._leaflet_map.setView([lat, lng], 16);
-            }, 10);
+            const map = element._leaflet_map;
+            map.invalidateSize();
+            map.setView([lat, lng], 17);
             return;
         }
 
         const map = L.map(element, {
             zoomControl: false, attributionControl: false, dragging: false,
-            scrollWheelZoom: false, doubleClickZoom: false, boxZoom: false,
-            keyboard: false
-        }).setView([lat, lng], 16);
+            scrollWheelZoom: false, doubleClickZoom: false, boxZoom: false
+        }).setView([lat, lng], 17);
 
-        L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
+        L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19, attribution: ''
+        }).addTo(map);
+
         L.marker([lat, lng], {icon: getArrowIcon(color, heading)}).addTo(map);
         
         element._leaflet_map = map;
+        setTimeout(() => map.invalidateSize(), 200);
     }
 
     async function loadTranscript(dateStr) {
         const container = document.getElementById('log-container');
-        container.innerHTML = '<div class="loading">Fetching transcripts and cross-referencing locations...</div>';
-        
+        container.innerHTML = '<div class="loading">Loading...</div>';
+
         try {
+            // Using Python API instead of direct file fetch
             const res = await fetch(`/api/data?date=${dateStr}`);
-            if(!res.ok) throw new Error("Failed to fetch data");
+            if(!res.ok) throw new Error("No log found or Drive unavailable");
             const data = await res.json();
             
-            container.innerHTML = '';
-            
-            if(data.length === 0) {
-                container.innerHTML = '<div class="loading">No transcripts found for this date.</div>';
+            if (data.error) {
+                container.innerHTML = `<div class="loading">${data.error}</div>`;
                 return;
             }
+            if (data.length === 0) {
+                container.innerHTML = `<div class="loading">No transcripts found for ${dateStr}</div>`;
+                return;
+            }
+
+            container.innerHTML = '';
             
             data.forEach((entry, index) => {
                 const row = document.createElement('div');
                 row.className = 'script-line';
                 
                 const hasLoc = entry.Location != null;
+                const loc = entry.Location || {};
+                
+                const uniqueMapId = `map-${index}`;
                 const color = entry.Color || "#333";
                 
-                const lat = hasLoc ? entry.Location.Lat : 0;
-                const lng = hasLoc ? entry.Location.Long : 0;
-                const heading = hasLoc ? entry.Location.Heading : 0;
-                const speed = hasLoc ? Math.round(entry.Location.Speed) + " mph" : "";
-                
-                const tooltipHTML = hasLoc ? `
+                const headingVal = hasLoc ? (loc.Heading !== undefined ? loc.Heading : null) : null;
+                const mapLat = hasLoc ? loc.Lat : AMES_DEFAULT.lat;
+                const mapLng = hasLoc ? loc.Long : AMES_DEFAULT.lng;
+                const mapColor = hasLoc ? color : '#888';
+                const speed = hasLoc ? Math.round(loc.Speed) + " mph" : "";
+
+                const tooltipHTML = `
                     <div class="tooltip">
                         <div class="tooltip-header">
                             <span>${entry.Route}</span>
@@ -365,41 +364,46 @@ HTML_TEMPLATE = """
                         </div>
                         <div class="tooltip-map"></div>
                         <div class="tooltip-footer">
-                            Lat: ${lat.toFixed(4)}, Lng: ${lng.toFixed(4)}
-                        </div>
-                    </div>` : `<div class="tooltip" style="width:auto; padding:10px;">No GPS Data</div>`;
-
-                row.innerHTML = `
-                    <div class="meta-col">
-                        <span class="time">${entry.Time}</span>
-                    </div>
-                    <div class="dialogue-col">
-                        <div class="unit-id" style="color:${color}; background: ${color}20;"
-                             onmouseenter="if(${hasLoc}) window.initMap(this.querySelector('.tooltip-map'), ${lat}, ${lng}, ${heading}, '${color}')">
-                            BUS ${entry.BusID}
-                            ${tooltipHTML}
-                        </div>
-                        <div class="speech" style="color:${color}" onclick="playAudio('${entry.AudioPath}', this)">
-                            ${entry.Text}
+                            ${hasLoc ? `Lat: ${loc.Lat.toFixed(4)}, Lng: ${loc.Long.toFixed(4)}` : "No GPS Data"}
                         </div>
                     </div>`;
                 
+                row.innerHTML = `
+                    <div class="meta-col">
+                        <span class="time">${entry.Time}</span>
+                        <span class="channel">BUS ${entry.BusID}</span>
+                    </div>
+                    <div class="dialogue-col">
+                        <div class="unit-id" style="color:${color}" 
+                             onmouseenter="window.initMap(this.querySelector('.tooltip-map'), ${mapLat}, ${mapLng}, ${headingVal}, '${mapColor}')">
+                            [${entry.BusID}]
+                            ${tooltipHTML}
+                        </div>
+                        <div class="speech" style="color:${color}" onclick="playAudio('${entry.AudioPath}', this)">${entry.Text}</div>
+                    </div>`;
                 container.appendChild(row);
             });
-            
-        } catch(e) {
-            container.innerHTML = `<div class="loading" style="color:red">Error: ${e.message}</div>`;
+        } catch(e) { 
+            document.getElementById('log-container').innerHTML = `<div style="text-align:center; padding:40px; color:#999">${e.message}</div>`; 
         }
     }
 
-    refreshLog();
+    function playAudio(path, el) {
+        document.querySelectorAll('.speech').forEach(x => x.classList.remove('playing'));
+        el.classList.add('playing');
+        document.getElementById('audio-player').src = path;
+        document.getElementById('audio-player').play();
+    }
+
+    loadTranscript(localISOTime);
 </script>
 </body>
 </html>
 """
 
 if __name__ == '__main__':
-    log("--- CyRide Web Interface Starting on Port 80 ---")
-    wait_for_drive()
-    # Runs on Port 80. Requires sudo or capability (handled by service file).
+    log("--- CyRide Web Interface Starting ---")
+    log("Note: Running on Port 80 (Requires CAP_NET_BIND_SERVICE)")
+    # We DO NOT wait for drive here anymore to ensure port opens immediately
+    # Drive status is checked in API endpoints
     app.run(host='0.0.0.0', port=80)
